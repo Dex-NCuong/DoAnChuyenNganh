@@ -1,16 +1,25 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="AI Study QnA", version="0.1.0")
 
+    # CORS configuration - must be before other middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000",
+        ],  # Explicit origins for better security
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
+        expose_headers=["*"],
+        max_age=3600,
     )
 
     @app.get("/health")
@@ -21,13 +30,49 @@ def create_app() -> FastAPI:
     async def hello():
         return {"message": "Hello from FastAPI"}
 
+    # Global exception handler for unhandled exceptions (not HTTPException)
+    # This ensures CORS headers are always included even when unexpected errors occur
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        # Let FastAPI handle HTTPException (it already includes CORS headers via middleware)
+        if isinstance(exc, HTTPException):
+            raise exc
+        
+        print(f"[Global Exception Handler] {type(exc).__name__}: {str(exc)}")
+        import traceback
+        print(f"[Global Exception Handler] Traceback: {traceback.format_exc()}")
+        
+        origin = request.headers.get("origin")
+        cors_headers = {}
+        if origin and origin in [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000",
+        ]:
+            cors_headers = {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "*",
+            }
+        
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "detail": f"Lỗi server: {str(exc)}"
+            },
+            headers=cors_headers
+        )
+
     # Routers (Module 3+)
-    from .routers import auth, documents, query, history
+    from .routers import auth, documents, query, history, admin
 
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
     app.include_router(documents.router, prefix="/documents", tags=["documents"])
     app.include_router(query.router, prefix="/query", tags=["query"])
     app.include_router(history.router, prefix="/history", tags=["history"])
+    app.include_router(admin.router, prefix="/admin", tags=["admin"])
 
     return app
 

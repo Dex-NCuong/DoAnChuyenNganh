@@ -81,3 +81,19 @@ def save_faiss_index(index, namespace: str = "default") -> None:
     faiss.write_index(index, path)
 
 
+def load_faiss_index(namespace: str = "default"):
+    import os
+
+    try:
+        import faiss  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            "FAISS is not available. Please install faiss-cpu/faiss-gpu for your platform."
+        ) from exc
+
+    path = get_faiss_index_path(namespace)
+    if not os.path.exists(path):
+        return None
+    return faiss.read_index(path)
+
+

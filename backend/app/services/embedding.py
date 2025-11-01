@@ -22,9 +22,16 @@ class EmbeddingService:
         self._openai_client = None
 
         if self.provider == "openai" and settings.openai_api_key:
-            from openai import OpenAI
+            try:
+                from openai import OpenAI
 
-            self._openai_client = OpenAI(api_key=settings.openai_api_key)
+                # Initialize with minimal parameters to avoid httpx compatibility issues
+                self._openai_client = OpenAI(api_key=settings.openai_api_key)
+                print(f"[Embedding] OpenAI client initialized successfully")
+            except Exception as e:
+                print(f"[Embedding] Failed to initialize OpenAI client: {e}")
+                # Nếu không khởi tạo được client (ví dụ do thư viện không hỗ trợ tham số proxies)
+                self._openai_client = None
         elif self.provider != "openai":
             # Force local provider if OpenAI key is missing
             self.provider = "local"
@@ -34,13 +41,25 @@ class EmbeddingService:
             self.provider = "local"
             self.model = settings.embedding_local_model
 
+        if self.provider == "openai" and self._openai_client is None:
+            # fallback if client failed to initialize
+            self.provider = "local"
+            self.model = settings.embedding_local_model
+
     async def embed_texts(self, texts: Sequence[str]) -> List[List[float]]:
         cleaned = [t.strip() for t in texts if t and t.strip()]
         if not cleaned:
             return []
 
         if self.provider == "openai" and self._openai_client:
-            return await self._embed_openai(cleaned)
+            try:
+                return await self._embed_openai(cleaned)
+            except Exception as e:
+                # If OpenAI fails, automatically fallback to local
+                print(f"[Embedding] Error in OpenAI embedding, falling back to local: {e}")
+                self.provider = "local"
+                self.model = settings.embedding_local_model
+                return await self._embed_local(cleaned)
         return await self._embed_local(cleaned)
 
     async def _embed_openai(self, texts: Sequence[str]) -> List[List[float]]:
@@ -51,12 +70,31 @@ class EmbeddingService:
                 input=list(batch),
             )
 
-        embeddings: list[list[float]] = []
-        for i in range(0, len(texts), self.batch_size):
-            batch = texts[i : i + self.batch_size]
-            response = await _call(batch)
-            embeddings.extend([item.embedding for item in response.data])
-        return embeddings
+        try:
+            embeddings: list[list[float]] = []
+            for i in range(0, len(texts), self.batch_size):
+                batch = texts[i : i + self.batch_size]
+                response = await _call(batch)
+                embeddings.extend([item.embedding for item in response.data])
+            return embeddings
+        except Exception as e:
+            # Handle OpenAI API errors (quota, rate limit, etc.) by falling back to local
+            error_msg = str(e)
+            if "quota" in error_msg.lower() or "rate" in error_msg.lower() or "429" in error_msg:
+                print(f"[Embedding] OpenAI API error (quota/rate limit): {e}")
+                print("[Embedding] Falling back to local embedding model")
+                # Switch to local provider for future calls
+                self.provider = "local"
+                self.model = settings.embedding_local_model
+                # Retry with local embedding
+                return await self._embed_local(texts)
+            else:
+                # For other errors, still fallback to local but log the error
+                print(f"[Embedding] OpenAI API error: {e}")
+                print("[Embedding] Falling back to local embedding model")
+                self.provider = "local"
+                self.model = settings.embedding_local_model
+                return await self._embed_local(texts)
 
     async def _embed_local(self, texts: Sequence[str]) -> List[List[float]]:
         def _get_model():

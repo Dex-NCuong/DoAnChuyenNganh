@@ -8,7 +8,131 @@ export const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem("token");
+  if (token && !config.headers.Authorization) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+export function setAuthToken(token) {
+  if (token) {
+    localStorage.setItem("token", token);
+  } else {
+    localStorage.removeItem("token");
+  }
+}
+
+export function removeToken() {
+  localStorage.removeItem("token");
+}
+
 export async function health() {
   const { data } = await api.get("/health");
   return data;
+}
+
+export async function fetchAdminUsers() {
+  const { data } = await api.get("/admin/users");
+  return data;
+}
+
+export async function fetchAdminDocuments() {
+  const { data } = await api.get("/admin/documents");
+  return data;
+}
+
+export async function fetchAdminStats() {
+  const { data } = await api.get("/admin/stats");
+  return data;
+}
+
+// Auth APIs
+export async function register(email, password, fullName) {
+  const { data } = await api.post("/auth/register", {
+    email,
+    password,
+    full_name: fullName,
+  });
+  return data;
+}
+
+export async function login(email, password) {
+  const { data } = await api.post("/auth/login-json", {
+    email,
+    password,
+  });
+  return data;
+}
+
+export async function getMe() {
+  const { data } = await api.get("/auth/me");
+  return data;
+}
+
+// Document APIs
+export async function uploadDocument(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await api.post("/documents/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function listDocuments() {
+  const { data } = await api.get("/documents/");
+  return data;
+}
+
+export async function getDocument(documentId) {
+  const { data } = await api.get(`/documents/${documentId}`);
+  return data;
+}
+
+export async function deleteDocument(documentId) {
+  await api.delete(`/documents/${documentId}`);
+}
+
+// Query APIs
+export async function askQuestion(
+  question,
+  documentId = null,
+  conversationId = null
+) {
+  const { data } = await api.post("/query/ask", {
+    question,
+    document_id: documentId,
+    conversation_id: conversationId, // To group Q&As in the same conversation
+    // top_k removed - now auto-calculated by backend based on context length
+  });
+  return data;
+}
+
+export async function getQueryHistory(documentId = null, limit = 20) {
+  const params = { limit };
+  if (documentId) params.document_id = documentId;
+  const { data } = await api.get("/query/history", { params });
+  return data;
+}
+
+// History APIs
+export async function getHistory(documentId = null, limit = 20) {
+  const params = { limit };
+  if (documentId) params.document_id = documentId;
+  const { data } = await api.get("/history/", { params });
+  return data;
+}
+
+export async function deleteHistory(historyId) {
+  await api.delete(`/history/${historyId}`);
+}
+
+export async function deleteConversation(conversationId) {
+  await api.delete(`/history/conversation/${conversationId}`);
+}
+
+export async function deleteHistoryByDocument(documentId) {
+  await api.delete(`/history/document/${documentId}`);
 }

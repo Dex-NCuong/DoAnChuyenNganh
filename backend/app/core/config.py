@@ -1,5 +1,5 @@
 import os
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Settings(BaseModel):
@@ -19,8 +19,21 @@ class Settings(BaseModel):
     )
     embedding_batch_size: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 
-    # OpenAI or other provider keys can be added in later modules
+    llm_provider: str = os.getenv("LLM_PROVIDER", "gemini")  # Default to Gemini
+    llm_model: str = os.getenv("LLM_MODEL", "gemini-2.5-flash")
+    llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "2048"))  # Increased for Gemini
+    rag_max_context_length: int = int(os.getenv("RAG_MAX_CONTEXT_LENGTH", "20000"))  # Max chars in context
+    admin_emails: set[str] = Field(
+        default_factory=lambda: {
+            email.strip().lower()
+            for email in os.getenv("ADMIN_EMAILS", "").split(",")
+            if email.strip()
+        }
+    )
+
+    # API keys
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
+    gemini_api_key: str | None = os.getenv("GEMINI_API_KEY", "AIzaSyCp9rDco53tJdc7w9zHulbXw1ST666ZuEY")
 
     # Auth/JWT
     jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", "dev-secret-change-me")
