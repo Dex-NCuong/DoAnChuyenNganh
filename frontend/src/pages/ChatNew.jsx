@@ -7,6 +7,7 @@ import {
   deleteConversation,
 } from "../services/api";
 import Button from "../components/Button";
+import ReactMarkdown from "react-markdown";
 
 // Context Menu Component
 function ContextMenu({ x, y, onRename, onDelete, onClose }) {
@@ -90,8 +91,170 @@ function ChatItem({ conversation, isActive, onClick, onMenuClick }) {
   );
 }
 
+// Helper function để format citation
+function formatCitation(ref) {
+  if (!ref.document_file_type) {
+    return "Nguồn tài liệu";
+  }
+
+  const fileType = ref.document_file_type.toLowerCase();
+
+  // PDF: chỉ hiển thị "Trang X"
+  if (fileType === "pdf" && ref.page_number) {
+    return `Trang ${ref.page_number}`;
+  }
+
+  // DOCX/DOC/MD/TXT: hiển thị section/heading trực tiếp (không thêm tiền tố "Mục:")
+  if (
+    fileType === "docx" ||
+    fileType === "doc" ||
+    fileType === "md" ||
+    fileType === "txt"
+  ) {
+    if (ref.section) {
+      // Truncate nếu quá dài
+      const sectionText =
+        ref.section.length > 50
+          ? ref.section.substring(0, 50) + "..."
+          : ref.section;
+      return sectionText;
+    }
+  }
+
+  // Fallback: nếu không có thông tin cụ thể
+  return "Nguồn tài liệu";
+}
+
+function getFileIcon(fileType) {
+  const icons = {
+    pdf: "📄",
+    docx: "📝",
+    md: "📋",
+    txt: "📄",
+  };
+  return icons[fileType] || "📄";
+}
+
+// Citations Component
+function Citations({ references }) {
+  if (!references || references.length === 0) return null;
+
+  // Group by document
+  const grouped = references.reduce((acc, ref) => {
+    const key = ref.document_id;
+    if (!acc[key]) {
+      acc[key] = {
+        filename: ref.document_filename || "Tài liệu",
+        file_type: ref.document_file_type,
+        refs: [],
+      };
+    }
+    acc[key].refs.push(ref);
+    return acc;
+  }, {});
+
+  return (
+    <div className="mt-3 pt-3 border-t border-gray-200">
+      <div className="text-xs font-semibold text-gray-500 mb-2 flex items-center">
+        <span className="mr-1">📚</span> Nguồn trích dẫn:
+      </div>
+      <div className="space-y-2">
+        {Object.values(grouped).map((group, idx) => (
+          <div key={idx} className="text-xs">
+            <div className="font-medium text-gray-700 mb-1">
+              {getFileIcon(group.file_type)} {group.filename}
+            </div>
+            <div className="ml-4 space-y-0.5">
+              {group.refs.map((ref, refIdx) => (
+                <div key={refIdx} className="text-gray-600">
+                  {formatCitation(ref)}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Message Component
 function Message({ message, isUser }) {
+  // Đảm bảo messageText luôn là string thuần túy (không phải React element)
+  let messageText = "";
+
+  // Helper function để extract string từ bất kỳ giá trị nào
+  const extractString = (value) => {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean")
+      return String(value);
+    // Nếu là object, kiểm tra xem có phải React element không
+    if (typeof value === "object") {
+      // Nếu có $$typeof, đây là React element - không thể render trực tiếp
+      if (value.$$typeof) {
+        console.warn(
+          "[Message] Detected React element in message, skipping",
+          value
+        );
+        return "";
+      }
+      // Nếu có text property
+      if (value.text !== undefined) {
+        const extracted = extractString(value.text);
+        // Double check: nếu extracted vẫn là object, return empty
+        if (typeof extracted === "object" && extracted.$$typeof) {
+          console.warn("[Message] Extracted text is still a React element");
+          return "";
+        }
+        return extracted;
+      }
+      // Nếu có answer property
+      if (value.answer !== undefined) {
+        const extracted = extractString(value.answer);
+        // Double check: nếu extracted vẫn là object, return empty
+        if (typeof extracted === "object" && extracted.$$typeof) {
+          console.warn("[Message] Extracted answer is still a React element");
+          return "";
+        }
+        return extracted;
+      }
+      // Thử JSON.stringify nếu là plain object
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return "";
+      }
+    }
+    return String(value || "");
+  };
+
+  messageText = extractString(message);
+
+  // Final validation: đảm bảo messageText là string và không phải React element
+  if (typeof messageText !== "string") {
+    console.error(
+      "[Message] messageText is not a string:",
+      typeof messageText,
+      messageText
+    );
+    messageText = "";
+  }
+
+  // Check if messageText contains React element (shouldn't happen but double check)
+  if (messageText && typeof messageText === "object" && messageText.$$typeof) {
+    console.error("[Message] messageText is a React element, clearing");
+    messageText = "";
+  }
+
+  // Remove CHUNKS_USED pattern from message text (case insensitive)
+  if (messageText && typeof messageText === "string") {
+    // Remove patterns like [CHUNKS_USED: 1, 2, 3] or CHUNKS_USED: 1, 2, 3
+    messageText = messageText
+      .replace(/\[?CHUNKS_USED:\s*[\d,\s]+\]?/gi, "")
+      .trim();
+  }
+
   return (
     <div className={`mb-6 ${isUser ? "text-right" : ""}`}>
       <div
@@ -99,7 +262,121 @@ function Message({ message, isUser }) {
           isUser ? "bg-purple-600 text-white" : "bg-gray-100 text-gray-800"
         }`}
       >
-        <div className="whitespace-pre-wrap leading-relaxed">{message}</div>
+        {isUser ? (
+          <div className="whitespace-pre-wrap leading-relaxed">
+            {messageText}
+          </div>
+        ) : (
+          <>
+            <div className="prose prose-sm max-w-none leading-relaxed">
+              {messageText && typeof messageText === "string" ? (
+                <ReactMarkdown
+                  components={{
+                    // Custom styling for markdown elements
+                    h1: ({ node, ...props }) => (
+                      <h1 className="text-xl font-bold mb-2 mt-4" {...props} />
+                    ),
+                    h2: ({ node, ...props }) => (
+                      <h2 className="text-lg font-bold mb-2 mt-3" {...props} />
+                    ),
+                    h3: ({ node, ...props }) => (
+                      <h3
+                        className="text-base font-bold mb-1 mt-2"
+                        {...props}
+                      />
+                    ),
+                    p: ({ node, ...props }) => (
+                      <p className="mb-2" {...props} />
+                    ),
+                    ul: ({ node, ...props }) => (
+                      <ul
+                        className="list-disc list-inside mb-2 space-y-1"
+                        {...props}
+                      />
+                    ),
+                    ol: ({ node, ...props }) => (
+                      <ol
+                        className="list-decimal list-inside mb-2 space-y-1"
+                        {...props}
+                      />
+                    ),
+                    li: ({ node, ...props }) => (
+                      <li className="ml-4" {...props} />
+                    ),
+                    strong: ({ node, ...props }) => (
+                      <strong className="font-bold" {...props} />
+                    ),
+                    em: ({ node, ...props }) => (
+                      <em className="italic" {...props} />
+                    ),
+                    code: ({ node, inline, ...props }) =>
+                      inline ? (
+                        <code
+                          className="bg-gray-200 px-1 py-0.5 rounded text-sm font-mono"
+                          {...props}
+                        />
+                      ) : (
+                        <code
+                          className="block bg-gray-200 p-2 rounded text-sm font-mono overflow-x-auto mb-2"
+                          {...props}
+                        />
+                      ),
+                    pre: ({ node, ...props }) => (
+                      <pre
+                        className="bg-gray-200 p-2 rounded text-sm font-mono overflow-x-auto mb-2"
+                        {...props}
+                      />
+                    ),
+                    table: ({ node, ...props }) => (
+                      <div className="overflow-x-auto mb-2">
+                        <table
+                          className="min-w-full border-collapse border border-gray-300"
+                          {...props}
+                        />
+                      </div>
+                    ),
+                    th: ({ node, ...props }) => (
+                      <th
+                        className="border border-gray-300 px-2 py-1 bg-gray-200 font-bold"
+                        {...props}
+                      />
+                    ),
+                    td: ({ node, ...props }) => (
+                      <td
+                        className="border border-gray-300 px-2 py-1"
+                        {...props}
+                      />
+                    ),
+                    blockquote: ({ node, ...props }) => (
+                      <blockquote
+                        className="border-l-4 border-gray-400 pl-4 italic my-2"
+                        {...props}
+                      />
+                    ),
+                    a: ({ node, ...props }) => (
+                      <a
+                        className="text-blue-600 underline"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        {...props}
+                      />
+                    ),
+                  }}
+                >
+                  {String(messageText)}
+                </ReactMarkdown>
+              ) : (
+                <div className="text-gray-500 italic">No content available</div>
+              )}
+            </div>
+            {message &&
+              typeof message === "object" &&
+              message.references &&
+              message.references.length > 0 && (
+                <Citations references={message.references} />
+              )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -238,9 +515,13 @@ export default function ChatNew() {
       const data = await getHistory(null, 100);
 
       // Group history records by conversation_id
+      // Only group records that have the same conversation_id
+      // Records without conversation_id will be treated as separate conversations
       const convGroups = {};
       data.forEach((h) => {
-        const convId = h.conversation_id || h.id; // Use conversation_id if exists, else use history_id as conversation starter
+        // Only use conversation_id if it exists, otherwise use history_id as fallback
+        // But this should not happen if backend sets conversation_id correctly
+        const convId = h.conversation_id || h.id;
         if (!convGroups[convId]) {
           convGroups[convId] = [];
         }
@@ -252,6 +533,29 @@ export default function ChatNew() {
         conversationIdMap.current[convId] = convGroups[convId].sort(
           (a, b) => new Date(a.created_at) - new Date(b.created_at) // Sort by time, oldest first
         );
+      });
+
+      // Clean up: Remove conversations that no longer exist in backend
+      const existingConvIds = new Set(Object.keys(convGroups));
+      Object.keys(conversationIdMap.current).forEach((convId) => {
+        if (!existingConvIds.has(convId)) {
+          // Conversation was deleted, remove from cache
+          delete conversationIdMap.current[convId];
+          delete conversationMessagesRef.current[convId];
+          delete chatTitleCache.current[convId];
+          console.log(
+            `[ChatNew] Removed deleted conversation ${convId} from cache`
+          );
+
+          // If deleted conversation was active, clear it
+          if (activeConversationId === convId) {
+            setActiveConversationId(null);
+            setMessages([]);
+            try {
+              localStorage.removeItem("activeConversationId");
+            } catch {}
+          }
+        }
       });
 
       // Create conversation list (one entry per conversation_id, using first Q&A as title)
@@ -315,8 +619,12 @@ export default function ChatNew() {
       // Build messages from all Q&As in this conversation
       const allMessages = [];
       historyRecords.forEach((record) => {
-        allMessages.push({ text: record.question, isUser: true });
-        allMessages.push({ text: record.answer, isUser: false });
+        allMessages.push({ text: String(record.question || ""), isUser: true });
+        allMessages.push({
+          text: String(record.answer || ""), // ✅ Đảm bảo luôn là string
+          isUser: false,
+          references: record.references || [], // ✅ Thêm references
+        });
       });
       setMessages(allMessages);
       // Store in ref for persistence
@@ -330,8 +638,12 @@ export default function ChatNew() {
       if (conversation) {
         console.log(`[ChatNew] Found conversation in list, loading first Q&A`);
         const initialMessages = [
-          { text: conversation.question, isUser: true },
-          { text: conversation.answer, isUser: false },
+          { text: String(conversation.question || ""), isUser: true },
+          {
+            text: String(conversation.answer || ""), // ✅ Đảm bảo luôn là string
+            isUser: false,
+            references: conversation.references || [], // ✅ Thêm references
+          },
         ];
         setMessages(initialMessages);
         conversationMessagesRef.current[conversationId] = initialMessages;
@@ -349,8 +661,15 @@ export default function ChatNew() {
             if (records.length > 0) {
               const allMessages = [];
               records.forEach((record) => {
-                allMessages.push({ text: record.question, isUser: true });
-                allMessages.push({ text: record.answer, isUser: false });
+                allMessages.push({
+                  text: String(record.question || ""),
+                  isUser: true,
+                });
+                allMessages.push({
+                  text: String(record.answer || ""), // ✅ Đảm bảo luôn là string
+                  isUser: false,
+                  references: record.references || [], // ✅ Thêm references
+                });
               });
               setMessages(allMessages);
               conversationMessagesRef.current[conversationId] = allMessages;
@@ -449,8 +768,12 @@ export default function ChatNew() {
 
         const newMessages = [
           ...messagesToAppendTo,
-          { text: question, isUser: true },
-          { text: result.answer, isUser: false },
+          { text: String(question || ""), isUser: true },
+          {
+            text: String(result.answer || ""), // ✅ Đảm bảo luôn là string
+            isUser: false,
+            references: result.references || [], // ✅ Thêm references
+          },
         ];
 
         console.log(
@@ -564,8 +887,12 @@ export default function ChatNew() {
 
         // Update messages
         const initialMessages = [
-          { text: question, isUser: true },
-          { text: result.answer, isUser: false },
+          { text: String(question || ""), isUser: true },
+          {
+            text: String(result.answer || ""), // ✅ Đảm bảo luôn là string
+            isUser: false,
+            references: result.references || [], // ✅ Thêm references
+          },
         ];
         setMessages(initialMessages);
         conversationMessagesRef.current[finalConversationId] = initialMessages;
@@ -653,7 +980,7 @@ export default function ChatNew() {
       // Delete all history records in this conversation
       await deleteConversation(conversationId);
 
-      // Clean up local state
+      // Clean up local state immediately
       // Remove from cache
       saveTitleToCache(conversationId, undefined);
 
@@ -668,10 +995,14 @@ export default function ChatNew() {
 
       // If deleted conversation was active, select first one or clear
       if (activeConversationId === conversationId) {
+        // Get remaining conversations after deletion
         const remaining = conversations.filter((c) => c.id !== conversationId);
         if (remaining.length > 0) {
           setActiveConversationId(remaining[0].id);
-          loadConversationMessages(remaining[0].id);
+          // Wait a bit for state to update, then load messages
+          setTimeout(() => {
+            loadConversationMessages(remaining[0].id);
+          }, 100);
         } else {
           setActiveConversationId(null);
           setMessages([]);
@@ -684,7 +1015,42 @@ export default function ChatNew() {
 
       // Reload conversations to sync with backend
       await loadConversations();
+
+      // Show success message (optional)
+      console.log(
+        `[ChatNew] Successfully deleted conversation ${conversationId}`
+      );
     } catch (err) {
+      // If 404, conversation already deleted - treat as success
+      if (err?.response?.status === 404) {
+        // Clean up local state anyway
+        saveTitleToCache(conversationId, undefined);
+        delete conversationIdMap.current[conversationId];
+        delete conversationMessagesRef.current[conversationId];
+        setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+
+        if (activeConversationId === conversationId) {
+          const remaining = conversations.filter(
+            (c) => c.id !== conversationId
+          );
+          if (remaining.length > 0) {
+            setActiveConversationId(remaining[0].id);
+            setTimeout(() => {
+              loadConversationMessages(remaining[0].id);
+            }, 100);
+          } else {
+            setActiveConversationId(null);
+            setMessages([]);
+            try {
+              localStorage.removeItem("activeConversationId");
+            } catch {}
+          }
+        }
+        await loadConversations();
+        console.log(`[ChatNew] Conversation ${conversationId} already deleted`);
+        return; // Success - conversation already deleted
+      }
+
       console.error("Delete conversation error:", err);
       setError(err?.response?.data?.detail || "Xóa thất bại");
     }
@@ -796,7 +1162,7 @@ export default function ChatNew() {
           ) : (
             <div className="max-w-3xl mx-auto">
               {messages.map((msg, idx) => (
-                <Message key={idx} message={msg.text} isUser={msg.isUser} />
+                <Message key={idx} message={msg} isUser={msg.isUser} />
               ))}
               <div ref={messagesEndRef} />
             </div>
@@ -827,14 +1193,27 @@ export default function ChatNew() {
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="Hỏi bất kỳ điều gì..."
                   rows={1}
-                  className="w-full px-4 py-3 pr-12 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none resize-none max-h-32"
+                  disabled={loading}
+                  className="w-full px-4 py-3 pr-12 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none resize-none max-h-32 disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Enter" && !e.shiftKey && !loading) {
                       e.preventDefault();
                       handleSubmit(e);
                     }
                   }}
                 />
+                {question.trim() && !loading && (
+                  <button
+                    type="button"
+                    onClick={() => setQuestion("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
+                    title="Xóa câu hỏi"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
               </div>
               <Button
                 type="submit"

@@ -60,15 +60,14 @@ async def list_history(
     ]
 
 
-@router.delete("/{history_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_history(
-    history_id: str,
-    current_user: UserPublic = Depends(get_current_user),
-):
+# IMPORTANT: Define specific routes BEFORE parameterized routes to avoid conflicts
+# Route /all must be defined before /{history_id} to avoid /all being matched as history_id
+
+@router.delete("/all", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_all_history(current_user: UserPublic = Depends(get_current_user)):
+    """Delete all history records for the current user."""
     db = get_database()
-    deleted = await delete_history_record(db, current_user.id, history_id)
-    if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History not found")
+    await clear_history_for_user(db, current_user.id)
     return None
 
 
@@ -82,28 +81,32 @@ async def delete_history_by_document(
     return None
 
 
-@router.delete("/all", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_all_history(current_user: UserPublic = Depends(get_current_user)):
-    db = get_database()
-    await clear_history_for_user(db, current_user.id)
-    return None
-
-
 @router.delete("/conversation/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation(
     conversation_id: str,
     current_user: UserPublic = Depends(get_current_user),
 ):
-    """Delete all history records in a conversation (identified by conversation_id)."""
+    """Delete all history records in a conversation (identified by conversation_id).
+    This operation is idempotent - if conversation doesn't exist, returns success anyway.
+    """
     db = get_database()
     deleted_count = await delete_history_by_conversation(
         db, current_user.id, conversation_id
     )
-    if deleted_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversation not found or already deleted"
-        )
+    # Idempotent delete: if conversation doesn't exist, still return success
+    # This prevents errors when user clicks delete multiple times or conversation already deleted
+    return None
+
+
+@router.delete("/{history_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_history(
+    history_id: str,
+    current_user: UserPublic = Depends(get_current_user),
+):
+    db = get_database()
+    deleted = await delete_history_record(db, current_user.id, history_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History not found")
     return None
 
 

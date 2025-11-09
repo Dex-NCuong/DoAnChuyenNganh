@@ -73,14 +73,17 @@ async def upload_document(
     file_size = os.path.getsize(file_path)
     
     try:
-        # Parse nội dung file
-        content = parse_file(file_path, file_type)
+        # Parse nội dung file - trả về list chunks với metadata
+        parsed_chunks = parse_file(file_path, file_type)
         
-        # Chia nhỏ thành chunks
-        chunks = split_text(content, chunk_size=500, chunk_overlap=50)
+        # Chia nhỏ thành chunks (nếu cần) - giữ metadata
+        # Tăng chunk_size lên 800 để giữ nguyên page content tốt hơn, chỉ chia khi thực sự cần
+        chunks = split_text(parsed_chunks, chunk_size=800, chunk_overlap=100)
         
-        # Lấy preview (200 ký tự đầu)
-        content_preview = content[:200] if content else None
+        # Lấy preview từ chunks đầu tiên
+        content_preview = None
+        if chunks and chunks[0].get("content"):
+            content_preview = chunks[0]["content"][:200]
         
         # Lưu document vào DB
         document = await create_document(

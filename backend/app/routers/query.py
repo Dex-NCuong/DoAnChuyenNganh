@@ -38,6 +38,8 @@ class AskResponse(BaseModel):
     answer: str
     references: List[HistoryReference]
     documents: List[str]
+    conversation_id: Optional[str] = None
+    history_id: Optional[str] = None
 
 
 @router.post("/ask", response_model=AskResponse)

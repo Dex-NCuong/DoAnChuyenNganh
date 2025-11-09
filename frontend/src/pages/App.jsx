@@ -3,6 +3,7 @@ import { Routes, Route, Link, useNavigate } from "react-router-dom";
 import { ProtectedRoute } from "../components/ProtectedRoute";
 import { getMe, removeToken } from "../services/api";
 import Login from "./Login";
+import Register from "./Register";
 import Landing from "./Landing";
 import Upload from "./Upload";
 import ChatNew from "./ChatNew";
@@ -201,6 +202,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
           <Route
             path="/upload"
             element={

@@ -8,8 +8,12 @@ from pydantic import BaseModel, Field
 
 class HistoryReference(BaseModel):
     document_id: Optional[str] = None
+    document_filename: Optional[str] = None  # Tên file (PDF, DOCX, etc.)
+    document_file_type: Optional[str] = None  # Loại file (pdf, docx, md, txt)
     chunk_id: Optional[str] = None
     chunk_index: Optional[int] = None
+    page_number: Optional[int] = None  # Số trang (cho PDF)
+    section: Optional[str] = None  # Tên mục/section (cho DOCX, MD, TXT)
     score: Optional[float] = None
     content_preview: Optional[str] = None
 

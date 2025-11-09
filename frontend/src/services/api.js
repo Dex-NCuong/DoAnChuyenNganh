@@ -136,3 +136,7 @@ export async function deleteConversation(conversationId) {
 export async function deleteHistoryByDocument(documentId) {
   await api.delete(`/history/document/${documentId}`);
 }
+
+export async function deleteAllHistory() {
+  await api.delete(`/history/all`);
+}
