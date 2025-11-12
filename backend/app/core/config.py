@@ -35,6 +35,18 @@ class Settings(BaseModel):
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY", "AIzaSyCp9rDco53tJdc7w9zHulbXw1ST666ZuEY")
 
+    # Google Calendar integration
+    google_client_id: str | None = os.getenv("GOOGLE_CLIENT_ID")
+    google_client_secret: str | None = os.getenv("GOOGLE_CLIENT_SECRET")
+    google_redirect_uri: str | None = os.getenv("GOOGLE_REDIRECT_URI")
+    calendar_token_secret: str | None = os.getenv("CALENDAR_TOKEN_SECRET")
+    calendar_success_redirect: str = os.getenv(
+        "CALENDAR_SUCCESS_REDIRECT", "http://localhost:5173/settings?calendar=connected"
+    )
+    calendar_failure_redirect: str = os.getenv(
+        "CALENDAR_FAILURE_REDIRECT", "http://localhost:5173/settings?calendar=error"
+    )
+
     # Auth/JWT
     jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", "dev-secret-change-me")
     jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")

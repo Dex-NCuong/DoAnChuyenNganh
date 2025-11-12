@@ -1,7 +1,9 @@
-from pydantic import BaseModel, EmailStr, Field
+from datetime import datetime, timezone
 from typing import Optional
-from motor.motor_asyncio import AsyncIOMotorDatabase
+
 from bson import ObjectId
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel, EmailStr, Field
 
 
 class UserInCreate(BaseModel):
@@ -16,6 +18,9 @@ class UserInDB(BaseModel):
     hashed_password: str
     full_name: Optional[str] = None
     is_admin: bool = False
+    google_calendar_connected: bool = False
+    google_calendar_token: Optional[str] = None
+    calendar_connected_at: Optional[datetime] = None
 
 
 class UserPublic(BaseModel):
@@ -31,6 +36,9 @@ async def get_user_by_email(db: AsyncIOMotorDatabase, email: str) -> Optional[Us
         return None
     doc["_id"] = str(doc["_id"])  # stringify ObjectId
     doc.setdefault("is_admin", False)
+    doc.setdefault("google_calendar_connected", False)
+    doc.setdefault("google_calendar_token", None)
+    doc.setdefault("calendar_connected_at", None)
     return UserInDB.model_validate(doc)
 
 
@@ -46,6 +54,9 @@ async def create_user(
         "hashed_password": hashed_password,
         "full_name": full_name,
         "is_admin": is_admin,
+        "google_calendar_connected": False,
+        "google_calendar_token": None,
+        "calendar_connected_at": None,
     })
     return UserInDB.model_validate({
         "_id": str(res.inserted_id),
@@ -53,6 +64,9 @@ async def create_user(
         "hashed_password": hashed_password,
         "full_name": full_name,
         "is_admin": is_admin,
+        "google_calendar_connected": False,
+        "google_calendar_token": None,
+        "calendar_connected_at": None,
     })
 
 
@@ -66,5 +80,66 @@ async def get_user_by_id(db: AsyncIOMotorDatabase, user_id: str) -> Optional[Use
         return None
     doc["_id"] = str(doc["_id"])  # stringify ObjectId
     doc.setdefault("is_admin", False)
+    doc.setdefault("google_calendar_connected", False)
+    doc.setdefault("google_calendar_token", None)
+    doc.setdefault("calendar_connected_at", None)
     return UserInDB.model_validate(doc)
+
+
+async def set_user_calendar_credentials(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    encrypted_token: str,
+) -> None:
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        return
+    await db["users"].update_one(
+        {"_id": oid},
+        {
+            "$set": {
+                "google_calendar_connected": True,
+                "google_calendar_token": encrypted_token,
+                "calendar_connected_at": datetime.now(tz=timezone.utc),
+            }
+        },
+    )
+
+
+async def clear_user_calendar_credentials(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+) -> None:
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        return
+    await db["users"].update_one(
+        {"_id": oid},
+        {
+            "$set": {
+                "google_calendar_connected": False,
+                "google_calendar_token": None,
+                "calendar_connected_at": None,
+            }
+        },
+    )
+
+
+async def get_user_calendar_token(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+) -> Optional[str]:
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        return None
+    doc = await db["users"].find_one({"_id": oid}, {"google_calendar_token": 1})
+    if not doc:
+        return None
+    token = doc.get("google_calendar_token")
+    if not token:
+        return None
+    return token
 

@@ -158,7 +158,17 @@ export default function Upload() {
                       <span className="px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs font-medium">✗ Chưa embed</span>
                     )}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{new Date(doc.upload_date).toLocaleString()}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                    {new Date(doc.upload_date).toLocaleString("vi-VN", {
+                      timeZone: "Asia/Ho_Chi_Minh",
+                      year: "numeric",
+                      month: "2-digit",
+                      day: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center">
                     <Button onClick={() => handleDelete(doc.id)} variant="danger" className="text-sm py-1 px-3">
                       Xóa

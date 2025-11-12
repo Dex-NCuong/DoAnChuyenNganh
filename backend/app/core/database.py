@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timezone
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -14,7 +15,11 @@ _mongo_db: Optional[AsyncIOMotorDatabase] = None
 def get_mongo_client() -> AsyncIOMotorClient:
     global _mongo_client
     if _mongo_client is None:
-        _mongo_client = AsyncIOMotorClient(settings.mongodb_uri)
+        _mongo_client = AsyncIOMotorClient(
+            settings.mongodb_uri,
+            tz_aware=True,
+            tzinfo=timezone.utc,
+        )
     return _mongo_client
 
 

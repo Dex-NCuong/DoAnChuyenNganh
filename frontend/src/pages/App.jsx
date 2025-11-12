@@ -8,6 +8,7 @@ import Landing from "./Landing";
 import Upload from "./Upload";
 import ChatNew from "./ChatNew";
 import Admin from "./Admin";
+import Settings from "./Settings";
 import Card from "../components/Card";
 import Button from "../components/Button";
 
@@ -129,6 +130,12 @@ function Navigation({ user, onLogout }) {
                 >
                   Chat
                 </Link>
+                <Link 
+                  to="/settings" 
+                  className="text-gray-700 hover:text-purple-600 transition-colors font-medium text-sm"
+                >
+                  Cài đặt
+                </Link>
                 {user.is_admin && (
                   <Link 
                     to="/admin" 
@@ -216,6 +223,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <ChatNew />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <Settings />
               </ProtectedRoute>
             }
           />

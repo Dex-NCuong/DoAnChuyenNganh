@@ -109,7 +109,15 @@ export default function History() {
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center space-x-2">
                   <span className="text-sm text-gray-500">
-                    {new Date(history.created_at).toLocaleString()}
+                    {new Date(history.created_at).toLocaleString("vi-VN", {
+                      timeZone: "Asia/Ho_Chi_Minh",
+                      year: "numeric",
+                      month: "2-digit",
+                      day: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
                   </span>
                   {history.references && history.references.length > 0 && (
                     <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">

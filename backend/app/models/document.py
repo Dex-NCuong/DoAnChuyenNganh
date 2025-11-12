@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -59,7 +59,7 @@ async def create_document(
         "file_type": file_type,
         "file_path": file_path,
         "file_size": file_size,
-        "upload_date": datetime.utcnow(),
+        "upload_date": datetime.now(tz=timezone.utc),
         "chunk_count": chunk_count,
         "content_preview": content_preview,
         "is_embedded": False,
@@ -162,7 +162,7 @@ async def mark_document_embedded(
         {
             "$set": {
                 "is_embedded": True,
-                "embedded_at": datetime.utcnow(),
+                "embedded_at": datetime.now(tz=timezone.utc),
                 "embedding_model": embedding_model,
                 "embedding_dimension": embedding_dimension,
             }
@@ -177,7 +177,7 @@ async def mark_chunks_embedded(
     if not chunk_updates:
         return
     bulk_ops = []
-    now = datetime.utcnow()
+    now = datetime.now(tz=timezone.utc)
     for update in chunk_updates:
         chunk_id = update.get("chunk_id")
         if not chunk_id:

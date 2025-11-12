@@ -7,6 +7,7 @@ import {
   deleteConversation,
 } from "../services/api";
 import Button from "../components/Button";
+import CalendarButton from "../components/CalendarButton";
 import ReactMarkdown from "react-markdown";
 
 // Context Menu Component
@@ -179,7 +180,7 @@ function Citations({ references }) {
 }
 
 // Message Component
-function Message({ message, isUser }) {
+function Message({ message, isUser, previousMessage }) {
   // Đảm bảo messageText luôn là string thuần túy (không phải React element)
   let messageText = "";
 
@@ -254,6 +255,13 @@ function Message({ message, isUser }) {
       .replace(/\[?CHUNKS_USED:\s*[\d,\s]+\]?/gi, "")
       .trim();
   }
+
+  const calendarMetadata = !isUser ? message?.calendarMetadata || {} : {};
+  const calendarQuestion =
+    calendarMetadata.question ||
+    (previousMessage && previousMessage.isUser ? previousMessage.text : "");
+  const calendarAnswer = calendarMetadata.answer || messageText;
+  const calendarReferences = message.references || calendarMetadata.references || [];
 
   return (
     <div className={`mb-6 ${isUser ? "text-right" : ""}`}>
@@ -375,6 +383,13 @@ function Message({ message, isUser }) {
               message.references.length > 0 && (
                 <Citations references={message.references} />
               )}
+            {!isUser && calendarQuestion && calendarAnswer && (
+              <CalendarButton
+                question={calendarQuestion}
+                answer={calendarAnswer}
+                references={calendarReferences}
+              />
+            )}
           </>
         )}
       </div>
@@ -525,7 +540,18 @@ export default function ChatNew() {
         if (!convGroups[convId]) {
           convGroups[convId] = [];
         }
-        convGroups[convId].push(h);
+        const references = h.references || [];
+        const document_ids = Array.from(
+          new Set(
+            references
+              .map((ref) => ref.document_id)
+              .filter((docId) => !!docId)
+          )
+        );
+        convGroups[convId].push({
+          ...h,
+          document_ids,
+        });
       });
 
       // Store full conversation data
@@ -619,11 +645,30 @@ export default function ChatNew() {
       // Build messages from all Q&As in this conversation
       const allMessages = [];
       historyRecords.forEach((record) => {
-        allMessages.push({ text: String(record.question || ""), isUser: true });
+        const questionText = String(record.question || "");
+        const answerText = String(record.answer || "");
+        const references = record.references || [];
+        const documentIds = Array.from(
+          new Set(
+            references
+              .map((ref) => ref.document_id)
+              .filter((docId) => !!docId)
+          )
+        );
+        allMessages.push({ text: questionText, isUser: true });
         allMessages.push({
-          text: String(record.answer || ""), // ✅ Đảm bảo luôn là string
+          text: answerText,
           isUser: false,
-          references: record.references || [], // ✅ Thêm references
+          references,
+          calendarMetadata: {
+            question: questionText,
+            answer: answerText,
+            references,
+            documentId: record.document_id || null,
+            documentIds,
+            historyId: record.id,
+            conversationId: record.conversation_id || conversationId,
+          },
         });
       });
       setMessages(allMessages);
@@ -643,6 +688,21 @@ export default function ChatNew() {
             text: String(conversation.answer || ""), // ✅ Đảm bảo luôn là string
             isUser: false,
             references: conversation.references || [], // ✅ Thêm references
+            calendarMetadata: {
+              question: String(conversation.question || ""),
+              answer: String(conversation.answer || ""),
+              references: conversation.references || [],
+              documentId: conversation.document_id || null,
+              documentIds: Array.from(
+                new Set(
+                  (conversation.references || [])
+                    .map((ref) => ref.document_id)
+                    .filter((docId) => !!docId)
+                )
+              ),
+              historyId: conversation.id,
+              conversationId: conversation.id,
+            },
           },
         ];
         setMessages(initialMessages);
@@ -766,13 +826,30 @@ export default function ChatNew() {
           }, Active conversation: ${activeConversationId}`
         );
 
+        const references = result.references || [];
+        const documentIds = Array.from(
+          new Set(
+            references
+              .map((ref) => ref.document_id)
+              .filter((docId) => !!docId)
+          )
+        );
         const newMessages = [
           ...messagesToAppendTo,
           { text: String(question || ""), isUser: true },
           {
             text: String(result.answer || ""), // ✅ Đảm bảo luôn là string
             isUser: false,
-            references: result.references || [], // ✅ Thêm references
+            references, // ✅ Thêm references
+            calendarMetadata: {
+              question: String(question || ""),
+              answer: String(result.answer || ""),
+              references,
+              documentId: selectedDoc || null,
+              documentIds,
+              historyId: result.history_id,
+              conversationId: returnedConversationId || targetConversationId,
+            },
           },
         ];
 
@@ -794,10 +871,11 @@ export default function ChatNew() {
           id: result.history_id,
           question: question,
           answer: result.answer,
-          references: result.references || [],
+          references,
           created_at: new Date().toISOString(),
           document_id: selectedDoc || null,
           conversation_id: returnedConversationId || targetConversationId,
+          document_ids: documentIds,
         });
 
         // CRITICAL: Update activeConversationId to match the conversation we're appending to
@@ -875,14 +953,23 @@ export default function ChatNew() {
         setActiveConversationId(finalConversationId);
 
         // Create conversation entry
+        const references = result.references || [];
+        const documentIds = Array.from(
+          new Set(
+            references
+              .map((ref) => ref.document_id)
+              .filter((docId) => !!docId)
+          )
+        );
         const newConversation = {
           id: finalConversationId,
           question: question,
           answer: result.answer,
-          references: result.references || [],
+          references,
           created_at: new Date().toISOString(),
           document_id: selectedDoc || null,
           title: null,
+          document_ids: documentIds,
         };
 
         // Update messages
@@ -891,7 +978,16 @@ export default function ChatNew() {
           {
             text: String(result.answer || ""), // ✅ Đảm bảo luôn là string
             isUser: false,
-            references: result.references || [], // ✅ Thêm references
+            references,
+            calendarMetadata: {
+              question: String(question || ""),
+              answer: String(result.answer || ""),
+              references,
+              documentId: selectedDoc || null,
+              documentIds,
+              historyId: result.history_id,
+              conversationId: finalConversationId,
+            },
           },
         ];
         setMessages(initialMessages);
@@ -905,10 +1001,11 @@ export default function ChatNew() {
           id: result.history_id,
           question: question,
           answer: result.answer,
-          references: result.references || [],
+          references,
           created_at: new Date().toISOString(),
           document_id: selectedDoc || null,
           conversation_id: finalConversationId,
+          document_ids: documentIds,
         });
 
         // Update conversations list - check if conversation already exists
@@ -1162,7 +1259,12 @@ export default function ChatNew() {
           ) : (
             <div className="max-w-3xl mx-auto">
               {messages.map((msg, idx) => (
-                <Message key={idx} message={msg} isUser={msg.isUser} />
+                <Message
+                  key={idx}
+                  message={msg}
+                  isUser={msg.isUser}
+                  previousMessage={idx > 0 ? messages[idx - 1] : null}
+                />
               ))}
               <div ref={messagesEndRef} />
             </div>
