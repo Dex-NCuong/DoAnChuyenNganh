@@ -261,7 +261,23 @@ function Message({ message, isUser, previousMessage }) {
     calendarMetadata.question ||
     (previousMessage && previousMessage.isUser ? previousMessage.text : "");
   const calendarAnswer = calendarMetadata.answer || messageText;
-  const calendarReferences = message.references || calendarMetadata.references || [];
+  const calendarReferences =
+    message.references || calendarMetadata.references || [];
+
+  // Bubble hiển thị trạng thái AI đang suy nghĩ
+  if (!isUser && message && message.isTyping) {
+    return (
+      <div className="mb-6">
+        <div className="inline-block max-w-[85%] rounded-2xl px-4 py-3 bg-gray-100 text-gray-800">
+          <div className="flex items-center space-x-1">
+            <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce" />
+            <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce delay-150" />
+            <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce delay-300" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`mb-6 ${isUser ? "text-right" : ""}`}>
@@ -412,7 +428,13 @@ export default function ChatNew() {
   const [renamingId, setRenamingId] = useState(null);
   const [newTitle, setNewTitle] = useState("");
   const messagesEndRef = useRef(null);
+  const textareaRef = useRef(null);
   const chatTitleCache = useRef({}); // Cache for custom titles
+  const pendingUserMessageRef = useRef(null);
+  const pendingTypingMessageRef = useRef(null);
+  const abortControllerRef = useRef(null);
+  const activeRequestIdRef = useRef(null); // Để bỏ qua kết quả nếu đã bấm Hủy
+  const cancelTimestampRef = useRef(null); // Track when user canceled to cleanup orphaned conversations
 
   // Load titles from localStorage on mount
   useEffect(() => {
@@ -511,6 +533,17 @@ export default function ChatNew() {
     scrollToBottom();
   }, [messages]);
 
+  // Auto-resize textarea when question changes
+  useEffect(() => {
+    if (textareaRef.current) {
+      // Reset height to auto to get the correct scrollHeight
+      textareaRef.current.style.height = "auto";
+      // Set height based on scrollHeight, but max at 200px
+      const newHeight = Math.min(textareaRef.current.scrollHeight, 200);
+      textareaRef.current.style.height = `${newHeight}px`;
+    }
+  }, [question]);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -543,9 +576,7 @@ export default function ChatNew() {
         const references = h.references || [];
         const document_ids = Array.from(
           new Set(
-            references
-              .map((ref) => ref.document_id)
-              .filter((docId) => !!docId)
+            references.map((ref) => ref.document_id).filter((docId) => !!docId)
           )
         );
         convGroups[convId].push({
@@ -650,9 +681,7 @@ export default function ChatNew() {
         const references = record.references || [];
         const documentIds = Array.from(
           new Set(
-            references
-              .map((ref) => ref.document_id)
-              .filter((docId) => !!docId)
+            references.map((ref) => ref.document_id).filter((docId) => !!docId)
           )
         );
         allMessages.push({ text: questionText, isUser: true });
@@ -746,10 +775,68 @@ export default function ChatNew() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!question.trim()) return;
+    if (!question.trim() || loading) return;
+
+    // Kiểm tra bắt buộc phải chọn tài liệu
+    if (!selectedDoc) {
+      setError("Vui lòng chọn một tài liệu trước khi gửi câu hỏi");
+      return;
+    }
 
     setLoading(true);
     setError("");
+
+    const submittedQuestion = String(question || "");
+    const requestId = `req-${Date.now()}`;
+    activeRequestIdRef.current = requestId;
+
+    console.log(`[ChatNew] ===== Starting new request ${requestId} =====`);
+    console.log(`[ChatNew] Question: "${submittedQuestion}"`);
+    console.log(`[ChatNew] Active conversation: ${activeConversationId}`);
+
+    // Nếu vẫn còn message tạm từ lần trước (do lỗi nào đó), dọn sạch trước
+    if (pendingUserMessageRef.current || pendingTypingMessageRef.current) {
+      console.log(`[ChatNew] Cleaning up old pending messages`);
+      setMessages((prev) => {
+        // Filter by isPending and isTyping flags instead of IDs
+        const filtered = prev.filter((m) => !m.isPending && !m.isTyping);
+        console.log(
+          `[ChatNew] Cleaned up ${
+            prev.length - filtered.length
+          } old pending messages`
+        );
+        return filtered;
+      });
+      pendingUserMessageRef.current = null;
+      pendingTypingMessageRef.current = null;
+    }
+
+    // Tạo message tạm thời cho user + bubble đang gõ cho lần request mới
+    const userMessage = {
+      id: `user-${Date.now()}`,
+      text: submittedQuestion,
+      isUser: true,
+      isPending: true,
+      requestId: requestId, // Track which request this belongs to
+    };
+    const typingMessage = {
+      id: `typing-${Date.now()}`,
+      isUser: false,
+      isTyping: true,
+      requestId: requestId, // Track which request this belongs to
+    };
+
+    pendingUserMessageRef.current = userMessage;
+    pendingTypingMessageRef.current = typingMessage;
+
+    console.log(
+      `[ChatNew] Created pending messages - User: ${userMessage.id}, Typing: ${typingMessage.id}`
+    );
+    setMessages((prev) => [...prev, userMessage, typingMessage]);
+
+    // Tạo AbortController để có thể hủy request
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     try {
       // Send conversation_id if we're in an existing conversation
@@ -765,17 +852,36 @@ export default function ChatNew() {
           : null;
 
       const result = await askQuestion(
-        question,
+        submittedQuestion,
         selectedDoc || null,
-        conversationIdForBackend
+        conversationIdForBackend,
+        controller.signal
       );
+
+      console.log(`[ChatNew] Received response for request ${requestId}`);
+      console.log(`[ChatNew] Active request ID: ${activeRequestIdRef.current}`);
+      console.log(
+        `[ChatNew] Response conversation_id: ${result.conversation_id}`
+      );
+      console.log(`[ChatNew] Response history_id: ${result.history_id}`);
+
+      // Nếu request này đã bị hủy trong lúc chờ thì bỏ qua kết quả
+      if (activeRequestIdRef.current !== requestId) {
+        console.log(
+          `[ChatNew] ⚠️ Response received for CANCELED request ${requestId}, IGNORING and NOT saving to state`
+        );
+        console.log(
+          `[ChatNew] ⚠️ This response should NOT create a new conversation or message`
+        );
+
+        // CRITICAL: Make sure we don't save this to history or state
+        // Just return immediately without any state updates
+        return;
+      }
 
       // Get conversation_id from response (backend returns it)
       const returnedConversationId =
         result.conversation_id || result.history_id;
-
-      // Save question for later matching
-      const submittedQuestion = question;
 
       // CRITICAL: Determine which conversation we should append to
       // Priority:
@@ -812,10 +918,15 @@ export default function ChatNew() {
       if (targetConversationId) {
         // CRITICAL: Use current messages state OR ref to ensure we append to existing messages
         // Priority: use messages state if available and belong to target conversation
-        const messagesToAppendTo =
-          messages.length > 0 && activeConversationId === targetConversationId
-            ? messages // Use current displayed messages if they belong to target conversation
-            : conversationMessagesRef.current[targetConversationId] || [];
+        // Loại bỏ các message tạm thời (user + typing) trước khi append kết quả thật
+        const messagesToAppendTo = (() => {
+          const base =
+            messages.length > 0 && activeConversationId === targetConversationId
+              ? messages
+              : conversationMessagesRef.current[targetConversationId] || [];
+          // Filter by isPending and isTyping flags instead of IDs
+          return base.filter((m) => !m.isPending && !m.isTyping);
+        })();
 
         console.log(
           `[ChatNew] Appending to conversation ${targetConversationId}`
@@ -829,20 +940,18 @@ export default function ChatNew() {
         const references = result.references || [];
         const documentIds = Array.from(
           new Set(
-            references
-              .map((ref) => ref.document_id)
-              .filter((docId) => !!docId)
+            references.map((ref) => ref.document_id).filter((docId) => !!docId)
           )
         );
         const newMessages = [
           ...messagesToAppendTo,
-          { text: String(question || ""), isUser: true },
+          { text: submittedQuestion, isUser: true },
           {
             text: String(result.answer || ""), // ✅ Đảm bảo luôn là string
             isUser: false,
             references, // ✅ Thêm references
             calendarMetadata: {
-              question: String(question || ""),
+              question: submittedQuestion,
               answer: String(result.answer || ""),
               references,
               documentId: selectedDoc || null,
@@ -956,9 +1065,7 @@ export default function ChatNew() {
         const references = result.references || [];
         const documentIds = Array.from(
           new Set(
-            references
-              .map((ref) => ref.document_id)
-              .filter((docId) => !!docId)
+            references.map((ref) => ref.document_id).filter((docId) => !!docId)
           )
         );
         const newConversation = {
@@ -974,13 +1081,13 @@ export default function ChatNew() {
 
         // Update messages
         const initialMessages = [
-          { text: String(question || ""), isUser: true },
+          { text: submittedQuestion, isUser: true },
           {
             text: String(result.answer || ""), // ✅ Đảm bảo luôn là string
             isUser: false,
             references,
             calendarMetadata: {
-              question: String(question || ""),
+              question: submittedQuestion,
               answer: String(result.answer || ""),
               references,
               documentId: selectedDoc || null,
@@ -1029,11 +1136,250 @@ export default function ChatNew() {
       }
 
       setQuestion("");
+      pendingUserMessageRef.current = null;
+      pendingTypingMessageRef.current = null;
+      abortControllerRef.current = null;
+      activeRequestIdRef.current = null;
     } catch (err) {
-      setError(err?.response?.data?.detail || "Gửi câu hỏi thất bại");
+      console.log(`[ChatNew] ===== Request ${requestId} FAILED =====`);
+      console.log(`[ChatNew] Error:`, err);
+
+      // Nếu request bị hủy thì không hiện lỗi
+      const isCanceled =
+        err?.code === "ERR_CANCELED" ||
+        err?.name === "CanceledError" ||
+        (typeof err?.message === "string" &&
+          err.message.toLowerCase().includes("canceled"));
+
+      console.log(`[ChatNew] Is canceled: ${isCanceled}`);
+
+      if (!isCanceled) {
+        setError(err?.response?.data?.detail || "Gửi câu hỏi thất bại");
+      } else {
+        console.log(
+          `[ChatNew] Request was canceled by user, not showing error`
+        );
+      }
+
+      // Xoá các message tạm thời nếu có và đưa lại câu hỏi về ô input
+      if (pendingUserMessageRef.current || pendingTypingMessageRef.current) {
+        console.log(
+          `[ChatNew] Restoring question to input and removing pending messages`
+        );
+
+        if (pendingUserMessageRef.current?.text) {
+          setQuestion(pendingUserMessageRef.current.text);
+        }
+
+        setMessages((prev) => {
+          // Filter by isPending and isTyping flags instead of IDs
+          // This is more reliable as IDs might not match if state changed
+          const filtered = prev.filter((m) => !m.isPending && !m.isTyping);
+          console.log(
+            `[ChatNew] Removed ${
+              prev.length - filtered.length
+            } pending messages (before: ${prev.length}, after: ${
+              filtered.length
+            })`
+          );
+          return filtered;
+        });
+      }
+
+      console.log(`[ChatNew] Cleaning up request ${requestId} state`);
+      pendingUserMessageRef.current = null;
+      pendingTypingMessageRef.current = null;
+      abortControllerRef.current = null;
+      activeRequestIdRef.current = null;
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleCancel = () => {
+    console.log(`[ChatNew] ===== USER CANCELED REQUEST =====`);
+    console.log(
+      `[ChatNew] Active request ID before cancel: ${activeRequestIdRef.current}`
+    );
+    console.log(`[ChatNew] Pending messages:`, {
+      user: pendingUserMessageRef.current?.id,
+      typing: pendingTypingMessageRef.current?.id,
+    });
+
+    if (abortControllerRef.current) {
+      console.log(`[ChatNew] Aborting HTTP request`);
+      abortControllerRef.current.abort();
+    }
+
+    setLoading(false);
+
+    // CRITICAL: Clear activeRequestIdRef FIRST before cleaning up messages
+    // This ensures that if response comes back, it will be ignored
+    const canceledRequestId = activeRequestIdRef.current;
+    activeRequestIdRef.current = null;
+    console.log(
+      `[ChatNew] Cleared active request ID (was: ${canceledRequestId})`
+    );
+
+    // Xoá câu hỏi + bubble typing đang chờ, đồng thời đưa lại câu hỏi về ô input
+    if (pendingUserMessageRef.current || pendingTypingMessageRef.current) {
+      console.log(
+        `[ChatNew] Restoring question to input and removing pending messages`
+      );
+
+      if (pendingUserMessageRef.current?.text) {
+        const restoredQuestion = pendingUserMessageRef.current.text;
+        setQuestion(restoredQuestion);
+        console.log(`[ChatNew] Restored question: "${restoredQuestion}"`);
+      }
+
+      setMessages((prev) => {
+        // Filter by isPending and isTyping flags instead of IDs
+        // This is more reliable as IDs might not match if state changed
+        const filtered = prev.filter((m) => !m.isPending && !m.isTyping);
+        console.log(
+          `[ChatNew] Messages before: ${prev.length}, after: ${
+            filtered.length
+          }, removed: ${prev.length - filtered.length}`
+        );
+        return filtered;
+      });
+    }
+
+    console.log(`[ChatNew] Cleaning up refs`);
+
+    // Record the cancel timestamp for orphaned conversation cleanup
+    const cancelTime = new Date();
+    cancelTimestampRef.current = cancelTime;
+    console.log(
+      `[ChatNew] Recorded cancel timestamp: ${cancelTime.toISOString()}`
+    );
+
+    pendingUserMessageRef.current = null;
+    pendingTypingMessageRef.current = null;
+    abortControllerRef.current = null;
+    console.log(`[ChatNew] ===== CANCEL COMPLETE =====`);
+
+    // CRITICAL: Backend might have already created a history record before we canceled
+    // Wait a bit and cleanup any orphaned conversations created around the cancel time
+    console.log(`[ChatNew] Scheduling cleanup for orphaned conversations...`);
+
+    // Save current conversation IDs before canceling
+    const existingConvIds = new Set(conversations.map((c) => c.id));
+    const currentActiveConvId = activeConversationId;
+    console.log(
+      `[ChatNew] State at cancel - Existing conversations: ${existingConvIds.size}, Active: ${currentActiveConvId}`
+    );
+
+    setTimeout(async () => {
+      try {
+        console.log(`[ChatNew] ===== CLEANUP STARTING (5s after cancel) =====`);
+        console.log(`[ChatNew] Cancel timestamp: ${cancelTime.toISOString()}`);
+
+        // Reload conversations to get any that were created during the canceled request
+        const data = await getHistory(null, 100);
+        console.log(
+          `[ChatNew] Loaded ${data.length} history records from backend`
+        );
+
+        if (data.length === 0) {
+          console.log(`[ChatNew] No history records found, skipping cleanup`);
+          return;
+        }
+
+        // Find orphaned HISTORY RECORDS (not just conversations!)
+        // IMPORTANT: A conversation can have multiple Q&As (history records)
+        // When canceling in an existing conversation, backend creates a NEW history record
+        // We need to delete that specific history record, not the entire conversation!
+
+        const orphanedHistoryIds = [];
+        const affectedConversationIds = new Set();
+
+        data.forEach((h) => {
+          const historyId = h.id;
+          const convId = h.conversation_id || h.id;
+          const createdAt = new Date(h.created_at);
+
+          // Calculate time difference from cancel
+          const timeSinceCancelMs = createdAt - cancelTime;
+
+          // Window: -1s before to +6s after cancel
+          // This captures history records from the canceled request
+          // Backend can take 2-5s+ to process (embedding + LLM API + save DB)
+          const withinCancelWindow =
+            timeSinceCancelMs >= -1000 && timeSinceCancelMs <= 6000;
+
+          console.log(
+            `[ChatNew] History ${historyId.substring(0, 8)}...: ` +
+              `conv=${convId.substring(0, 8)}..., ` +
+              `time=${timeSinceCancelMs}ms, ` +
+              `window=${withinCancelWindow}, ` +
+              `created=${createdAt.toISOString()}`
+          );
+
+          // Mark as orphaned if created within cancel window
+          if (withinCancelWindow) {
+            orphanedHistoryIds.push(historyId);
+            affectedConversationIds.add(convId);
+            console.log(
+              `[ChatNew] ⚠️ ORPHANED HISTORY: ${historyId}, ` +
+                `created ${timeSinceCancelMs}ms relative to cancel`
+            );
+          }
+        });
+
+        if (orphanedHistoryIds.length > 0) {
+          console.log(
+            `[ChatNew] 🗑️ Deleting ${orphanedHistoryIds.length} orphaned history records:`,
+            orphanedHistoryIds
+          );
+
+          // Delete each orphaned history record
+          let deletedCount = 0;
+          for (const historyId of orphanedHistoryIds) {
+            try {
+              await deleteHistory(historyId);
+              deletedCount++;
+              console.log(
+                `[ChatNew] ✅ Deleted orphaned history: ${historyId}`
+              );
+            } catch (err) {
+              console.error(
+                `[ChatNew] ❌ Failed to delete history ${historyId}:`,
+                err
+              );
+            }
+          }
+
+          if (deletedCount > 0) {
+            // Reload conversations to update UI
+            await loadConversations();
+            console.log(
+              `[ChatNew] ✅ Cleanup complete - deleted ${deletedCount} orphaned history records from ${affectedConversationIds.size} conversations`
+            );
+
+            // If current active conversation was affected, reload its messages
+            if (affectedConversationIds.has(activeConversationId)) {
+              console.log(
+                `[ChatNew] Reloading messages for affected active conversation: ${activeConversationId}`
+              );
+              setTimeout(() => {
+                loadConversationMessages(activeConversationId);
+              }, 100);
+            }
+          }
+        } else {
+          console.log(`[ChatNew] ✅ No orphaned history records found`);
+        }
+
+        console.log(`[ChatNew] ===== CLEANUP COMPLETE =====`);
+      } catch (err) {
+        console.error(
+          `[ChatNew] ❌ Error during orphaned conversation cleanup:`,
+          err
+        );
+      }
+    }, 7000); // Wait 7 seconds for backend to finish processing and save to DB (embedding + LLM can be slow)
   };
 
   const handleContextMenu = (e, conversationId) => {
@@ -1280,7 +1626,7 @@ export default function ChatNew() {
                 onChange={(e) => setSelectedDoc(e.target.value)}
                 className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none"
               >
-                <option value="">Tất cả tài liệu</option>
+                <option value="">Chọn tài liệu</option>
                 {documents.map((doc) => (
                   <option key={doc.id} value={doc.id}>
                     {doc.filename}
@@ -1291,12 +1637,18 @@ export default function ChatNew() {
             <form onSubmit={handleSubmit} className="flex items-end gap-2">
               <div className="flex-1 relative">
                 <textarea
+                  ref={textareaRef}
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="Hỏi bất kỳ điều gì..."
                   rows={1}
                   disabled={loading}
-                  className="w-full px-4 py-3 pr-12 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none resize-none max-h-32 disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="w-full px-4 py-3 pr-12 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none resize-none disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  style={{
+                    minHeight: "52px",
+                    maxHeight: "200px",
+                    overflowY: "auto",
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey && !loading) {
                       e.preventDefault();
@@ -1308,22 +1660,53 @@ export default function ChatNew() {
                   <button
                     type="button"
                     onClick={() => setQuestion("")}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
+                    className="absolute right-2 top-3 p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
                     title="Xóa câu hỏi"
                   >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    <svg
+                      className="w-5 h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
                     </svg>
                   </button>
                 )}
               </div>
-              <Button
-                type="submit"
-                disabled={loading || !question.trim()}
-                className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
-              >
-                {loading ? <span className="animate-spin">⏳</span> : "Gửi"}
-              </Button>
+
+              {/* Nút Gửi / Dừng riêng biệt - như ChatGPT */}
+              {loading ? (
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-medium transition-all flex items-center gap-2 shadow-lg hover:shadow-xl"
+                  title="Dừng câu hỏi đang gửi"
+                >
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <rect x="6" y="6" width="12" height="12" strokeWidth={2} />
+                  </svg>
+                  Dừng
+                </button>
+              ) : (
+                <Button
+                  type="submit"
+                  disabled={!question.trim()}
+                  className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                >
+                  Gửi
+                </Button>
+              )}
             </form>
           </div>
         </div>

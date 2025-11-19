@@ -174,12 +174,88 @@ class RAGService:
                 raise ValueError("Document not found or not accessible")
 
             documents = [doc]
-
+            
         else:
 
             documents = await get_documents_by_user(db, user_id)
 
+        # Handle các câu chào / small-talk không liên quan đến tài liệu
+        normalized_question = question.strip().lower()
+        small_talk_phrases = [
+            "hi",
+            "hello",
+            "xin chào",
+            "chào",
+            "chao",
+            "chào bạn",
+            "chào ad",
+            "chào admin",
+            "good morning",
+            "good afternoon",
+            "good evening",
+            "bye",
+            "tạm biệt",
+            "cảm ơn",
+            "thank you",
+        ]
 
+        # Nếu câu hỏi rất ngắn và chỉ là lời chào / cảm ơn thì không gọi RAG
+        if len(normalized_question) <= 40 and any(
+            normalized_question == p or normalized_question.startswith(p + " ")
+            for p in small_talk_phrases
+        ):
+            # Trả lời thân thiện, không trích dẫn tài liệu
+            if any(
+                kw in normalized_question
+                for kw in ["cảm ơn", "cam on", "thank", "tks", "thanks"]
+            ):
+                answer = (
+                    "Cảm ơn bạn! Nếu cần mình hỗ trợ giải bài hoặc tóm tắt nội dung trong tài liệu, "
+                    "hãy gửi câu hỏi nhé."
+                )
+            elif any(
+                kw in normalized_question
+                for kw in ["bye", "tạm biệt", "tam biet", "good night"]
+            ):
+                answer = (
+                    "Tạm biệt bạn, hẹn gặp lại! Khi nào cần hỏi bài hoặc tra cứu tài liệu, cứ quay lại nhé."
+                )
+            else:
+                answer = (
+                    "Xin chào! Mình là trợ lý StudyQnA, mình sẽ giúp bạn trả lời các câu hỏi dựa trên tài liệu "
+                    "bạn đã tải lên. Bạn cứ gửi câu hỏi về nội dung cần học nhé."
+                )
+
+            # Lưu lịch sử nhưng không có references
+            history_record = await create_history(
+                db, user_id, question, answer, [], document_id, conversation_id
+            )
+
+            final_conversation_id = conversation_id
+
+            # Giữ logic conversation_id tương tự nhánh bình thường
+            if not final_conversation_id:
+                final_conversation_id = history_record.id
+                try:
+                    from bson import ObjectId
+
+                    await db["histories"].update_one(
+                        {"_id": ObjectId(history_record.id)},
+                        {"$set": {"conversation_id": history_record.id}},
+                    )
+                    history_record.conversation_id = history_record.id
+                except Exception as e:
+                    print(
+                        f"[RAG] Warning: Failed to update conversation_id for small-talk history {history_record.id}: {e}"
+                    )
+
+            return {
+                "answer": answer,
+                "references": [],
+                "documents": [],
+                "conversation_id": final_conversation_id,
+                "history_id": history_record.id,
+            }
 
         question_embeddings = await self.embedding_service.embed_texts([question])
 
@@ -257,9 +333,19 @@ class RAGService:
 
         if not results:
 
+            # Nếu người dùng đã chọn 1 tài liệu cụ thể mà không tìm được đoạn văn nào
+            # thì trả lời rõ ràng là câu hỏi không nằm trong nội dung tài liệu đó
+            if document_id:
+                answer = (
+                    "Câu hỏi này không nằm trong nội dung của tài liệu bạn đã chọn. "
+                    'Bạn có thể thử lại với chế độ "Tất cả tài liệu" hoặc chọn một tài liệu khác phù hợp hơn.'
+                )
+            else:
+                answer = "Không tìm thấy đoạn văn phù hợp trong tài liệu của bạn."
+
             return {
 
-                "answer": "Không tìm thấy đoạn văn phù hợp trong tài liệu của bạn.",
+                "answer": answer,
 
                 "references": [],
 
@@ -1038,8 +1124,7 @@ class RAGService:
 
 
 
-        # Filter references based on document_id and relevance
-        # Use chunks_by_document to determine which documents are most relevant
+        # Filter references based on document_id
         filtered_refs = deduplicated_refs
         
         if document_id:
@@ -1047,44 +1132,20 @@ class RAGService:
             filtered_refs = [ref for ref in deduplicated_refs if ref.document_id == document_id]
             print(f"[RAG] Filtered references to document {document_id}: {len(filtered_refs)} references")
         else:
-            # Use chunks_by_document to filter - allow multiple documents if they're all relevant
-            # This ensures we show references from all relevant documents, not just one
+            # Ở chế độ "Tất cả tài liệu" thì giữ mọi tài liệu mà LLM đã sử dụng,
+            # không lọc bớt theo chunks_by_document để có thể trích dẫn từ nhiều file khác nhau.
             if len(chunks_by_document) > 1:
-                # Find document with most chunks
-                max_chunks = max(chunks_by_document.values())
-                sorted_counts = sorted(chunks_by_document.values(), reverse=True)
-                second_max = sorted_counts[1] if len(sorted_counts) > 1 else 0
-                
-                # If one document has significantly more chunks (3+ more), only keep that document
-                # Otherwise, keep all documents with at least 2 chunks
-                if max_chunks >= 3 and max_chunks - second_max >= 3:
-                    # One document has significantly more chunks (3+ more), only keep that
-                    docs_with_max_chunks = {doc_id for doc_id, count in chunks_by_document.items() if count == max_chunks}
-                    filtered_refs = [ref for ref in deduplicated_refs if ref.document_id in docs_with_max_chunks]
-                    removed_docs = set(chunks_by_document.keys()) - docs_with_max_chunks
-                    if removed_docs:
-                        print(f"[RAG] Filtered to document with most chunks ({max_chunks}): {docs_with_max_chunks}, removed: {removed_docs}")
-                else:
-                    # Documents have similar chunk counts, keep all documents with at least 2 chunks
-                    # This allows multiple documents to be referenced if they're all relevant
-                    if max_chunks >= 2:
-                        relevant_docs = {doc_id for doc_id, count in chunks_by_document.items() if count >= 2}
-                        if relevant_docs and len(relevant_docs) < len(chunks_by_document):
-                            filtered_refs = [ref for ref in deduplicated_refs if ref.document_id in relevant_docs]
-                            removed_docs = set(chunks_by_document.keys()) - relevant_docs
-                            if removed_docs:
-                                print(f"[RAG] Filtered out documents with only 1 chunk: {removed_docs}")
-                                print(f"[RAG] Keeping references from {len(relevant_docs)} documents: {relevant_docs}")
-                    else:
-                        # All documents have only 1 chunk, keep all
-                        print(f"[RAG] All documents have 1 chunk, keeping all references")
+                print(f"[RAG] Multiple documents used in answer, keeping references from all {len(chunks_by_document)} documents")
             elif len(chunks_by_document) == 1:
-                # Only one document, keep all references
-                print(f"[RAG] Single document, keeping all references")
+                print(f"[RAG] Single document used in answer, keeping all references")
         
-        # Smart filtering: If there are multiple sections, prioritize the section(s) with most chunks
-        # Count chunks per section from chunks_actually_used (not from deduplicated_refs)
-        if len(filtered_refs) > 2 and chunks_actually_used:
+        # Smart filtering: If there are multiple sections, prioritize the section(s) với nhiều chunk nhất.
+        # Chỉ áp dụng khi tất cả references đều thuộc 1 tài liệu; nếu nhiều tài liệu thì giữ nguyên.
+        if (
+            len(filtered_refs) > 2
+            and chunks_actually_used
+            and len({ref.document_id for ref in filtered_refs if ref.document_id}) == 1
+        ):
             # Count chunks per section from chunks_actually_used
             section_chunk_counts = {}
             for chunk_info in chunks_actually_used:
@@ -1172,15 +1233,26 @@ class RAGService:
 
 
 
+        # Nếu câu trả lời cho biết "không đủ thông tin trong tài liệu", đừng trích dẫn nguồn nào
         # Ensure conversation_id is set - use provided conversation_id or create new one
         # If conversation_id is provided, use it (for continuing existing conversation)
         # If not provided, we'll set it to history_id after creating the record
         final_conversation_id = conversation_id
 
         # Create history with conversation_id (may be None for new conversation)
+        print(f"[RAG] ===== Creating history record =====")
+        print(f"[RAG] Question: {question[:100]}...")
+        print(f"[RAG] Answer: {answer[:100]}...")
+        print(f"[RAG] Conversation ID: {final_conversation_id}")
+        print(f"[RAG] Document ID: {document_id}")
+        print(f"[RAG] References count: {len(final_references)}")
+        
         history_record = await create_history(
             db, user_id, question, answer, final_references, document_id, final_conversation_id
         )
+        
+        print(f"[RAG] ✅ History record created - ID: {history_record.id}")
+        print(f"[RAG] ===================================")
 
         # If no conversation_id was provided, use the history_id as conversation_id
         # This ensures all Q&As in the same conversation share the same conversation_id
@@ -1320,35 +1392,31 @@ class RAGService:
 
 
 
-        # Enhanced prompt asking LLM to cite chunks
+        # Enhanced prompt asking LLM to cite chunks (chỉ cho hệ thống, không hiển thị trong câu trả lời) 
+        # và hỗ trợ nhiều câu hỏi / nhiều tài liệu
 
-        prompt = f"""Bạn là trợ lý học tập chuyên nghiệp. Hãy trả lời câu hỏi một cách chi tiết và chính xác dựa trên ngữ cảnh được cung cấp.
-
-
+        prompt = f"""Bạn là trợ lý học tập chuyên nghiệp. Hãy trả lời câu hỏi một cách chi tiết và chính xác dựa trên NGỮ CẢNH được cung cấp.
 
 Dưới đây là các đoạn văn từ tài liệu (mỗi đoạn có đánh dấu [Chunk X [tên_file], ...]):
 
-
-
 {context_text}
 
+Câu hỏi của người dùng: {question}
 
-
-Câu hỏi: {question}
-
-
-
-QUAN TRỌNG: 
-
-1. Hãy trả lời câu hỏi DỰA TRÊN các đoạn văn được cung cấp ở trên
-
-2. Sau khi trả lời, hãy liệt kê các chunk numbers mà bạn đã sử dụng để trả lời ở cuối câu trả lời theo format:
+QUAN TRỌNG:
+1. CHỈ sử dụng thông tin có trong các đoạn văn ở trên. Không tự bịa hoặc suy đoán ngoài tài liệu.
+2. Nếu người dùng hỏi NHIỀU Ý / NHIỀU CÂU trong cùng một câu hỏi (ví dụ có từ "và", xuống dòng, nhiều dấu "?"), hãy:
+   - Tách thành các phần 1), 2), 3)... và trả lời RÕ RÀNG từng phần.
+   - Với mỗi phần, hãy sử dụng đúng đoạn trích/chunk phù hợp.
+3. Nếu nhiều TÀI LIỆU (nhiều tên file khác nhau) đều liên quan, hãy trả lời nội dung đầy đủ cho từng ý, NHƯNG:
+   - KHÔNG được tự viết “(Nguồn: ...)”, “Chunk X” hay bất kỳ thông tin trích dẫn nguồn nào trong phần câu trả lời.
+   - Hệ thống sẽ tự hiển thị danh sách tài liệu và trang/section ở khu vực riêng.
+4. Nếu ngữ cảnh không đủ để trả lời một phần nào đó, hãy nói rõ là “trong tài liệu được cung cấp không đủ thông tin để trả lời chính xác phần này”.
+5. Sau khi trả lời, hãy liệt kê các chunk numbers mà bạn đã sử dụng ở CUỐI câu trả lời theo format:
 
    [CHUNKS_USED: 1, 5, 7]
 
-   (Chỉ liệt kê số thứ tự chunk, cách nhau bởi dấu phẩy)
-
-
+   (Chỉ liệt kê số thứ tự chunk, cách nhau bởi dấu phẩy. KHÔNG thêm gì khác, KHÔNG lặp lại nội dung hoặc nguồn ở dòng này.)
 
 Hãy trả lời:"""
 
@@ -1488,35 +1556,21 @@ Hãy trả lời:"""
 
 
 
-        # Fallback: manual summary
-
+        # Fallback: khi cả Gemini và OpenAI đều lỗi.
+        # Để tránh trả lời sai, không trích dẫn đoạn cụ thể nào mà trả lời chung là không thể tìm được dữ liệu phù hợp.
         if context_text and chunk_metadata_list:
-
-            first_chunk = chunk_metadata_list[0]
-
-            chunks_used = [{
-
-                "chunk_index": first_chunk.get("chunk_index"),
-
-                "document_id": first_chunk.get("document_id")
-
-            }]
-
-            first_content = first_chunk.get("content", "")
-
-            return (
-
-                "(Trả lời tạm thời) Dựa trên tài liệu: "
-
-                + first_content[:400]
-
-                + "...\n--> Câu trả lời cần được xác thực thêm.",
-
-                chunks_used
-
+            fallback_answer = (
+                "Trong các tài liệu bạn đã tải lên hiện không có dữ liệu phù hợp để trả lời câu hỏi này. "
+                "Bạn có thể kiểm tra lại tài liệu hoặc tải thêm tài liệu liên quan hơn."
             )
+            # Không trả về thông tin chunk nào để phía trên không xây references cụ thể.
+            return fallback_answer, []
 
-        return "Chưa có đủ dữ liệu để trả lời câu hỏi này.", []
+        return (
+            "Hiện tại hệ thống chưa có đủ dữ liệu hoặc đang gặp lỗi để trả lời câu hỏi này. "
+            "Bạn có thể thử lại sau hoặc kiểm tra lại tài liệu đã tải lên.",
+            [],
+        )
 
 
 

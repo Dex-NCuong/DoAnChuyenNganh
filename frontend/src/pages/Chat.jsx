@@ -39,7 +39,11 @@ export default function Chat() {
         question,
         selectedDoc || null
       );
-      setAnswer(result.answer);
+      // Ẩn pattern [CHUNKS_USED: ...] nếu có trong câu trả lời
+      const cleanAnswer = (result.answer || "")
+        .replace(/\[?CHUNKS_USED:\s*[\d,\s]+\]?/gi, "")
+        .trim();
+      setAnswer(cleanAnswer);
       setReferences(result.references || []);
       setQuestion("");
     } catch (err) {
@@ -130,7 +134,7 @@ export default function Chat() {
         <Card className="border-2 border-blue-100 bg-gradient-to-br from-white to-blue-50">
           <h3 className="text-xl font-semibold text-gray-800 mb-4 flex items-center">
             <span className="text-2xl mr-2">🔍</span>
-            Nguồn tham khảo ({references.length} chunk)
+            Nguồn tham khảo
           </h3>
           <div className="space-y-3">
             {references.map((ref, idx) => (
@@ -139,12 +143,21 @@ export default function Chat() {
                 className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
               >
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-gray-600">
-                    Chunk #{ref.chunk_index || idx + 1}
+                  <span className="text-sm font-medium text-gray-700">
+                    {ref.document_filename || "Tài liệu"}
                   </span>
-                  <span className="text-xs px-2 py-1 bg-blue-100 text-blue-800 rounded-full">
-                    {(ref.score * 100).toFixed(1)}% tương đồng
-                  </span>
+                  {typeof ref.score === "number" && (
+                    <span className="text-xs px-2 py-1 bg-blue-100 text-blue-800 rounded-full">
+                      {(ref.score * 100).toFixed(1)}% tương đồng
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-gray-500 mb-1">
+                  {ref.document_file_type &&
+                  ref.document_file_type.toLowerCase() === "pdf" &&
+                  ref.page_number
+                    ? `Trang ${ref.page_number}`
+                    : ref.section || ""}
                 </div>
                 <div className="text-sm text-gray-600 line-clamp-3">
                   {ref.content_preview

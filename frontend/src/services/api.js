@@ -99,14 +99,24 @@ export async function deleteDocument(documentId) {
 export async function askQuestion(
   question,
   documentId = null,
-  conversationId = null
+  conversationId = null,
+  signal = null
 ) {
-  const { data } = await api.post("/query/ask", {
-    question,
-    document_id: documentId,
-    conversation_id: conversationId, // To group Q&As in the same conversation
-    // top_k removed - now auto-calculated by backend based on context length
-  });
+  const config = {};
+  if (signal) {
+    config.signal = signal;
+  }
+
+  const { data } = await api.post(
+    "/query/ask",
+    {
+      question,
+      document_id: documentId,
+      conversation_id: conversationId, // To group Q&As in the same conversation
+      // top_k removed - now auto-calculated by backend based on context length
+    },
+    config
+  );
   return data;
 }
 
