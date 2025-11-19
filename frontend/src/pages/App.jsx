@@ -9,6 +9,9 @@ import Upload from "./Upload";
 import ChatNew from "./ChatNew";
 import Admin from "./Admin";
 import Settings from "./Settings";
+import Quiz from "./Quiz";
+import QuizPractice from "./QuizPractice";
+import QuizTest from "./QuizTest";
 import Card from "../components/Card";
 import Button from "../components/Button";
 
@@ -50,9 +53,11 @@ function Home() {
       <div className="max-w-5xl mx-auto">
         <div className="mb-8">
           <h1 className="text-4xl md:text-5xl font-bold text-gray-800 mb-2">
-            Xin chào, <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-blue-600">
+            Xin chào,{" "}
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-blue-600">
               {user.full_name || user.email}
-            </span>!
+            </span>
+            !
           </h1>
           {user.is_admin && (
             <span className="inline-block px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium">
@@ -61,12 +66,14 @@ function Home() {
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <Card className="bg-gradient-to-br from-blue-500 to-blue-600 text-white hover:shadow-xl transition-all">
             <Link to="/upload" className="block">
               <div className="text-4xl mb-3">📤</div>
               <h3 className="text-xl font-bold mb-2">Upload Tài liệu</h3>
-              <p className="text-blue-100 text-sm">Tải lên và quản lý tài liệu học tập của bạn</p>
+              <p className="text-blue-100 text-sm">
+                Tải lên và quản lý tài liệu học tập của bạn
+              </p>
             </Link>
           </Card>
 
@@ -74,19 +81,33 @@ function Home() {
             <Link to="/chat" className="block">
               <div className="text-4xl mb-3">💬</div>
               <h3 className="text-xl font-bold mb-2">Chat với AI</h3>
-              <p className="text-purple-100 text-sm">Đặt câu hỏi và nhận câu trả lời thông minh</p>
+              <p className="text-purple-100 text-sm">
+                Đặt câu hỏi và nhận câu trả lời thông minh
+              </p>
             </Link>
           </Card>
 
+          <Card className="bg-gradient-to-br from-orange-500 to-pink-600 text-white hover:shadow-xl transition-all">
+            <Link to="/quiz" className="block">
+              <div className="text-4xl mb-3">🎯</div>
+              <h3 className="text-xl font-bold mb-2">Tạo Quiz</h3>
+              <p className="text-orange-100 text-sm">
+                AI tự động tạo câu hỏi để ôn tập
+              </p>
+            </Link>
+          </Card>
         </div>
 
         <Card className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200">
           <div className="flex items-start">
             <div className="text-4xl mr-4">✨</div>
             <div>
-              <h3 className="text-lg font-semibold text-gray-800 mb-2">Bắt đầu học tập thông minh</h3>
+              <h3 className="text-lg font-semibold text-gray-800 mb-2">
+                Bắt đầu học tập thông minh
+              </h3>
               <p className="text-gray-600 mb-4">
-                Upload tài liệu của bạn, sau đó đặt câu hỏi để nhận được câu trả lời chính xác dựa trên nội dung tài liệu.
+                Upload tài liệu, chat với AI để hỏi đáp, và tạo quiz để ôn tập
+                kiến thức một cách hiệu quả.
               </p>
               <div className="flex flex-wrap gap-2">
                 <Link to="/upload">
@@ -94,6 +115,11 @@ function Home() {
                 </Link>
                 <Link to="/chat">
                   <Button variant="secondary">Bắt đầu Chat</Button>
+                </Link>
+                <Link to="/quiz">
+                  <Button className="bg-gradient-to-r from-orange-500 to-pink-600 hover:from-orange-600 hover:to-pink-700">
+                    Tạo Quiz
+                  </Button>
                 </Link>
               </div>
             </div>
@@ -118,27 +144,33 @@ function Navigation({ user, onLogout }) {
             </Link>
             {user && (
               <div className="hidden md:flex items-center space-x-6">
-                <Link 
-                  to="/upload" 
+                <Link
+                  to="/upload"
                   className="text-gray-700 hover:text-purple-600 transition-colors font-medium text-sm"
                 >
                   Upload
                 </Link>
-                <Link 
-                  to="/chat" 
+                <Link
+                  to="/chat"
                   className="text-gray-700 hover:text-purple-600 transition-colors font-medium text-sm"
                 >
                   Chat
                 </Link>
-                <Link 
-                  to="/settings" 
+                <Link
+                  to="/quiz"
+                  className="text-gray-700 hover:text-purple-600 transition-colors font-medium text-sm"
+                >
+                  Quiz
+                </Link>
+                <Link
+                  to="/settings"
                   className="text-gray-700 hover:text-purple-600 transition-colors font-medium text-sm"
                 >
                   Cài đặt
                 </Link>
                 {user.is_admin && (
-                  <Link 
-                    to="/admin" 
+                  <Link
+                    to="/admin"
                     className="text-gray-700 hover:text-purple-600 transition-colors font-medium text-sm"
                   >
                     Admin
@@ -150,9 +182,13 @@ function Navigation({ user, onLogout }) {
           {user ? (
             <div className="flex items-center space-x-4">
               <div className="hidden sm:block text-right">
-                <div className="text-sm font-medium text-gray-700">{user.email}</div>
+                <div className="text-sm font-medium text-gray-700">
+                  {user.email}
+                </div>
                 {user.is_admin && (
-                  <div className="text-xs text-green-600 font-medium">👑 Admin</div>
+                  <div className="text-xs text-green-600 font-medium">
+                    👑 Admin
+                  </div>
                 )}
               </div>
               <Button
@@ -166,7 +202,9 @@ function Navigation({ user, onLogout }) {
           ) : (
             <div className="flex items-center space-x-3">
               <Link to="/login">
-                <Button variant="secondary" className="text-sm">Đăng nhập</Button>
+                <Button variant="secondary" className="text-sm">
+                  Đăng nhập
+                </Button>
               </Link>
               <Link to="/login">
                 <Button className="text-sm bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700">
@@ -239,6 +277,30 @@ export default function App() {
             element={
               <ProtectedRoute requireAdmin={true}>
                 <Admin />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/quiz"
+            element={
+              <ProtectedRoute>
+                <Quiz />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/quiz/practice/:quizId"
+            element={
+              <ProtectedRoute>
+                <QuizPractice />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/quiz/test/:quizId"
+            element={
+              <ProtectedRoute>
+                <QuizTest />
               </ProtectedRoute>
             }
           />

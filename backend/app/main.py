@@ -66,7 +66,7 @@ def create_app() -> FastAPI:
         )
 
     # Routers (Module 3+)
-    from .routers import auth, documents, query, history, admin, calendar
+    from .routers import auth, documents, query, history, admin, calendar, quiz
 
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
     app.include_router(documents.router, prefix="/documents", tags=["documents"])
@@ -74,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(history.router, prefix="/history", tags=["history"])
     app.include_router(admin.router, prefix="/admin", tags=["admin"])
     app.include_router(calendar.router, prefix="/calendar", tags=["calendar"])
+    app.include_router(quiz.router, prefix="/quiz", tags=["quiz"])
 
     return app
 

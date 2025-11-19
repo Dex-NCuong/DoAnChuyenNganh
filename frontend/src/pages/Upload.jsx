@@ -2,6 +2,12 @@ import React, { useState, useEffect } from "react";
 import { uploadDocument, listDocuments, deleteDocument } from "../services/api";
 import Card from "../components/Card";
 import Button from "../components/Button";
+import CalendarModal from "../components/CalendarModal";
+import ConnectCalendarModal from "../components/ConnectCalendarModal";
+import {
+  createCalendarEvent,
+  fetchCalendarStatus,
+} from "../services/calendarApi";
 
 export default function Upload() {
   const [file, setFile] = useState(null);
@@ -9,6 +15,14 @@ export default function Upload() {
   const [documents, setDocuments] = useState([]);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  
+  // Calendar states
+  const [showCalendarModal, setShowCalendarModal] = useState(false);
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [selectedDocument, setSelectedDocument] = useState(null);
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const [calendarSubmitting, setCalendarSubmitting] = useState(false);
+  const [calendarFeedback, setCalendarFeedback] = useState("");
 
   useEffect(() => {
     loadDocuments();
@@ -60,6 +74,59 @@ export default function Upload() {
       setSuccess("Đã xóa tài liệu");
     } catch (err) {
       setError("Xóa thất bại");
+    }
+  };
+
+  // Calendar handlers
+  const handleAddToCalendar = async (doc) => {
+    setSelectedDocument(doc);
+    setCalendarLoading(true);
+    setCalendarFeedback("");
+    
+    try {
+      const status = await fetchCalendarStatus();
+      if (status?.connected) {
+        setShowCalendarModal(true);
+      } else {
+        setShowConnectModal(true);
+      }
+    } catch (err) {
+      setCalendarFeedback(
+        err?.response?.data?.detail ||
+          "Không thể kiểm tra trạng thái Google Calendar."
+      );
+    } finally {
+      setCalendarLoading(false);
+    }
+  };
+
+  const handleCreateEvent = async (payload) => {
+    if (!selectedDocument) return;
+    
+    setCalendarSubmitting(true);
+    setCalendarFeedback("");
+    
+    try {
+      // Create event with document information
+      const event = await createCalendarEvent({
+        ...payload,
+        event_type: "study_document",
+        document_ids: [selectedDocument.id],
+      });
+      
+      setShowCalendarModal(false);
+      setCalendarFeedback(`✅ Đã thêm "${selectedDocument.filename}" vào lịch học tập!`);
+      setSelectedDocument(null);
+      
+      // Clear feedback after 5 seconds
+      setTimeout(() => setCalendarFeedback(""), 5000);
+    } catch (err) {
+      setCalendarFeedback(
+        err?.response?.data?.detail ||
+          "Không thể tạo sự kiện Google Calendar. Vui lòng thử lại."
+      );
+    } finally {
+      setCalendarSubmitting(false);
     }
   };
 
@@ -127,11 +194,18 @@ export default function Upload() {
         </form>
       </Card>
 
-      <div className="flex items-center mb-6">
-        <span className="text-3xl mr-2">📚</span>
-        <h3 className="text-2xl font-semibold text-gray-800">
-          Danh sách tài liệu của bạn
-        </h3>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center">
+          <span className="text-3xl mr-2">📚</span>
+          <h3 className="text-2xl font-semibold text-gray-800">
+            Danh sách tài liệu của bạn
+          </h3>
+        </div>
+        {calendarFeedback && (
+          <div className="px-4 py-2 bg-green-50 border border-green-200 text-green-700 rounded-lg text-sm">
+            {calendarFeedback}
+          </div>
+        )}
       </div>
       {documents.length === 0 ? (
         <Card>
@@ -207,19 +281,48 @@ export default function Upload() {
                     })}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center">
-                    <Button
-                      onClick={() => handleDelete(doc.id)}
-                      variant="danger"
-                      className="text-sm py-1 px-3"
-                    >
-                      Xóa
-                    </Button>
+                    <div className="flex items-center justify-center gap-2">
+                      <button
+                        onClick={() => handleAddToCalendar(doc)}
+                        disabled={calendarLoading}
+                        className="inline-flex items-center px-3 py-1.5 text-sm border border-purple-200 text-purple-600 hover:bg-purple-50 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Thêm file này vào lịch học tập"
+                      >
+                        <span className="mr-1">📅</span>
+                        {calendarLoading ? "..." : "Lịch"}
+                      </button>
+                      <Button
+                        onClick={() => handleDelete(doc.id)}
+                        variant="danger"
+                        className="text-sm py-1 px-3"
+                      >
+                        Xóa
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* Calendar Modals */}
+      {showConnectModal && (
+        <ConnectCalendarModal onClose={() => setShowConnectModal(false)} />
+      )}
+      {showCalendarModal && selectedDocument && (
+        <CalendarModal
+          question={`Học tập tài liệu: ${selectedDocument.filename}`}
+          answer={`Nội dung học: ${selectedDocument.filename}\nLoại file: ${selectedDocument.file_type}\nSố chunks: ${selectedDocument.chunk_count}\n\nĐây là tài liệu học tập được tải lên vào ${new Date(selectedDocument.upload_date).toLocaleString("vi-VN")}.`}
+          references={[]}
+          submitting={calendarSubmitting}
+          onSubmit={handleCreateEvent}
+          onClose={() => {
+            setShowCalendarModal(false);
+            setSelectedDocument(null);
+          }}
+        />
       )}
     </div>
   );

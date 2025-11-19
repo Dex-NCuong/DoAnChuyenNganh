@@ -12,8 +12,8 @@ class Settings(BaseModel):
     faiss_index_dir: str = os.getenv("FAISS_INDEX_DIR", "./data/faiss")
     upload_dir: str = os.getenv("UPLOAD_DIR", "./data/uploads")
 
-    embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "openai")
-    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "local")  # Default to local (sentence-transformers)
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")  # Only used if provider=openai
     embedding_local_model: str = os.getenv(
         "EMBEDDING_LOCAL_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
     )

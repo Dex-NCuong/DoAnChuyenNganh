@@ -17,34 +17,28 @@ class EmbeddingService:
 
     def __init__(self, provider: str | None = None, model: str | None = None):
         self.provider = (provider or settings.embedding_provider).lower()
-        self.model = model or settings.embedding_model
         self.batch_size = settings.embedding_batch_size
         self._openai_client = None
 
+        # Default to local embedding model (sentence-transformers)
+        # OpenAI only used if explicitly set in env and has API key
         if self.provider == "openai" and settings.openai_api_key:
             try:
                 from openai import OpenAI
-
-                # Initialize with minimal parameters to avoid httpx compatibility issues
                 self._openai_client = OpenAI(api_key=settings.openai_api_key)
+                self.model = model or settings.embedding_model
                 print(f"[Embedding] OpenAI client initialized successfully")
             except Exception as e:
                 print(f"[Embedding] Failed to initialize OpenAI client: {e}")
-                # Nếu không khởi tạo được client (ví dụ do thư viện không hỗ trợ tham số proxies)
+                print(f"[Embedding] Falling back to local embedding model")
                 self._openai_client = None
-        elif self.provider != "openai":
-            # Force local provider if OpenAI key is missing
+                self.provider = "local"
+                self.model = settings.embedding_local_model
+        else:
+            # Use local embedding model (sentence-transformers)
             self.provider = "local"
             self.model = settings.embedding_local_model
-        elif not settings.openai_api_key:
-            # fallback to local if provider openai but no key
-            self.provider = "local"
-            self.model = settings.embedding_local_model
-
-        if self.provider == "openai" and self._openai_client is None:
-            # fallback if client failed to initialize
-            self.provider = "local"
-            self.model = settings.embedding_local_model
+            print(f"[Embedding] Using local embedding model: {self.model}")
 
     async def embed_texts(self, texts: Sequence[str]) -> List[List[float]]:
         cleaned = [t.strip() for t in texts if t and t.strip()]
