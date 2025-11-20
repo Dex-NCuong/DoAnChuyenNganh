@@ -10,7 +10,7 @@ export default function Quiz() {
   const [documents, setDocuments] = useState([]);
   const [quizzes, setQuizzes] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState("");
-  const [numQuestions, setNumQuestions] = useState(3);
+  const [numQuestions, setNumQuestions] = useState(5);
   const [difficulty, setDifficulty] = useState("medium");
   const [questionTypes, setQuestionTypes] = useState([
     "multiple_choice",
@@ -56,9 +56,9 @@ export default function Quiz() {
       return;
     }
 
-    // Validate số câu hỏi từ 1-3
-    if (numQuestions < 1 || numQuestions > 3) {
-      setError("Số câu hỏi phải từ 1 đến 3 câu");
+    // Validate số câu hỏi từ 5-20
+    if (numQuestions < 5 || numQuestions > 20) {
+      setError("Số câu hỏi phải từ 5 đến 20 câu");
       return;
     }
 
@@ -147,23 +147,29 @@ export default function Quiz() {
             </select>
           </div>
 
-          {/* Number of Questions - 1 to 3 for optimal AI generation */}
+          {/* Number of Questions - Buttons for 5, 10, 15, 20 */}
           <div className="mb-6">
             <label className="block text-lg font-bold text-gray-800 mb-3">
-              <span className="text-2xl mr-2">🔢</span> Số câu hỏi (1-3 câu):
+              <span className="text-2xl mr-2">🔢</span> Số câu hỏi:
             </label>
-            <select
-              value={numQuestions}
-              onChange={(e) => setNumQuestions(parseInt(e.target.value))}
-              className="w-full px-4 py-3 border-2 border-purple-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all bg-white text-lg font-medium"
-              required
-            >
-              <option value={1}>1 câu</option>
-              <option value={2}>2 câu</option>
-              <option value={3}>3 câu</option>
-            </select>
+            <div className="grid grid-cols-4 gap-3">
+              {[5, 10, 15, 20].map((num) => (
+                <button
+                  key={num}
+                  type="button"
+                  onClick={() => setNumQuestions(num)}
+                  className={`px-6 py-4 rounded-xl font-bold text-lg transition-all transform hover:scale-105 ${
+                    numQuestions === num
+                      ? "bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg scale-105"
+                      : "bg-white border-2 border-purple-300 text-gray-700 hover:border-purple-500"
+                  }`}
+                >
+                  {num} câu
+                </button>
+              ))}
+            </div>
             <p className="text-sm text-gray-600 mt-2">
-              Số câu hỏi tối ưu để AI tạo quiz chất lượng cao (bắt buộc từ 1-3 câu)
+              Đã chọn: <span className="font-bold text-purple-600">{numQuestions} câu hỏi</span>
             </p>
           </div>
 

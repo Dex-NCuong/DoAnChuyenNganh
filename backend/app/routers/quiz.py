@@ -63,11 +63,11 @@ async def generate_quiz(
     db = get_database()
     
     try:
-        # Validate inputs - số câu hỏi phải từ 1-3
-        if payload.num_questions < 1 or payload.num_questions > 3:
+        # Validate inputs - số câu hỏi phải từ 5-20
+        if payload.num_questions < 5 or payload.num_questions > 20:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Số câu hỏi phải từ 1 đến 3 câu"
+                detail="Số câu hỏi phải từ 5 đến 20 câu"
             )
         
         if payload.difficulty not in ["easy", "medium", "hard"]:
@@ -92,18 +92,28 @@ async def generate_quiz(
                 detail="Không thể tạo câu hỏi từ tài liệu này"
             )
         
-        # Validate số câu hỏi được tạo ra phải từ 1-3
+        # Validate số câu hỏi được tạo ra phải đúng hoặc gần đúng với yêu cầu
         if len(questions) < 1:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"AI không tạo được câu hỏi nào. Vui lòng thử lại hoặc chọn tài liệu khác."
             )
         
-        if len(questions) > 3:
-            # Giới hạn tối đa 3 câu
+        # Kiểm tra nếu số câu hỏi tạo ra ít hơn yêu cầu
+        if len(questions) < payload.num_questions:
+            print(f"[Quiz Router] ⚠️ Generated {len(questions)} questions, requested {payload.num_questions}")
+            # Nếu thiếu quá nhiều (>50%), báo lỗi
+            if len(questions) < payload.num_questions * 0.5:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"AI chỉ tạo được {len(questions)}/{payload.num_questions} câu hỏi. Vui lòng thử lại hoặc giảm số câu hỏi."
+                )
+        
+        # Nếu tạo ra nhiều hơn yêu cầu, chỉ lấy đúng số câu
+        if len(questions) > payload.num_questions:
             original_count = len(questions)
-            questions = questions[:3]
-            print(f"[Quiz Router] ⚠️ Limited questions to 3 (was {original_count})")
+            questions = questions[:payload.num_questions]
+            print(f"[Quiz Router] ⚠️ Limited questions to {payload.num_questions} (was {original_count})")
         
         # Get document info
         from ..models.document import get_document_by_id

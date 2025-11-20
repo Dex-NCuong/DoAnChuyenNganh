@@ -72,13 +72,14 @@ class QuizGeneratorService:
         if not chunks:
             raise ValueError("No content found in document to generate quiz")
         
-        # Build context from chunks - TỐI ƯU: giảm context cho 1-3 câu hỏi
+        # Build context from chunks - Điều chỉnh context dựa trên số câu hỏi (5-20)
         context_parts = []
         current_length = 0
-        # Giảm context dựa trên số câu hỏi: 1 câu = 1500, 2 câu = 2000, 3 câu = 2500
-        max_context_length = min(1500 + (num_questions * 500), 2500)
+        # Tăng context dựa trên số câu hỏi: 5 câu = 3000, 10 câu = 5000, 15 câu = 7000, 20 câu = 9000
+        max_context_length = min(2000 + (num_questions * 350), 10000)
         
-        max_chunks = min(10 + num_questions, 15)  # 1 câu = 11 chunks, 2 câu = 12, 3 câu = 13
+        # Tăng số chunks: 5 câu = 15 chunks, 10 câu = 20 chunks, 15-20 câu = 20 chunks
+        max_chunks = min(10 + num_questions, 20)
         for chunk in chunks[:max_chunks]:
             content = chunk.get("content", "")
             if content:
@@ -120,10 +121,31 @@ class QuizGeneratorService:
             difficulty
         )
         
-        # Generate quiz using LLM
-        questions = await self._generate_with_llm(prompt, num_questions)
+        # Generate quiz using LLM - retry if not enough questions
+        max_attempts = 3
+        questions = []
         
-        print(f"[QuizGen] Generated {len(questions)} questions")
+        for attempt in range(max_attempts):
+            try:
+                generated = await self._generate_with_llm(prompt, num_questions)
+                questions = generated
+                
+                # Nếu đã tạo đủ hoặc gần đủ số câu hỏi (>= 80%), chấp nhận
+                if len(questions) >= num_questions * 0.8:
+                    print(f"[QuizGen] ✅ Generated {len(questions)}/{num_questions} questions (attempt {attempt + 1})")
+                    break
+                else:
+                    print(f"[QuizGen] ⚠️ Only generated {len(questions)}/{num_questions} questions, retrying... (attempt {attempt + 1}/{max_attempts})")
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(2)  # Wait 2 seconds before retry
+            except Exception as e:
+                print(f"[QuizGen] ❌ Attempt {attempt + 1} failed: {e}")
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(2)
+                else:
+                    raise
+        
+        print(f"[QuizGen] Final result: Generated {len(questions)}/{num_questions} questions")
         return questions
     
     def _build_quiz_prompt(
@@ -209,8 +231,8 @@ Tạo {num_mc + num_tf} câu hỏi:"""
                         }],
                         "generationConfig": {
                             "temperature": 0.7,
-                            # Giảm tokens dựa trên số câu: 1 câu = 300, 2 câu = 500, 3 câu = 700
-                            "maxOutputTokens": min(300 + (num_questions * 200), 700),
+                            # Tăng tokens để tạo đủ số câu: 5 câu = 3000, 10 câu = 5000, 15 câu = 7000, 20 câu = 8000
+                            "maxOutputTokens": min(2000 + (num_questions * 300), 8000),
                             "topK": 40,
                             "topP": 0.95,
                         }
@@ -231,19 +253,55 @@ Tạo {num_mc + num_tf} câu hỏi:"""
                             print(f"[QuizGen] Candidate keys: {candidate.keys()}")
                             
                             # Check finishReason
+                            finish_reason = None
                             if "finishReason" in candidate:
                                 finish_reason = candidate["finishReason"]
                                 print(f"[QuizGen] Finish reason: {finish_reason}")
                                 if finish_reason in ["SAFETY", "RECITATION", "OTHER"]:
                                     print(f"[QuizGen] ⚠️ Request blocked by Gemini: {finish_reason}")
                                     raise Exception(f"Gemini blocked request: {finish_reason}")
+                                # MAX_TOKENS is OK - we can still try to parse partial response
+                                if finish_reason == "MAX_TOKENS":
+                                    print(f"[QuizGen] ⚠️ Response truncated (MAX_TOKENS), but will try to parse partial response")
                             
                             # Handle different response formats - improved parsing
                             full_response = None
                             
-                            # Debug: print full candidate structure
-                            print(f"[QuizGen] Full candidate: {json.dumps(candidate, indent=2, ensure_ascii=False)[:500]}")
+                            # Debug: print full candidate structure (truncated for readability)
+                            candidate_str = json.dumps(candidate, indent=2, ensure_ascii=False)
+                            print(f"[QuizGen] Full candidate: {candidate_str[:1000]}")
                             
+                            # Try to extract text from various locations in the response
+                            def extract_text_recursive(obj, depth=0, max_depth=5):
+                                """Recursively search for text in nested structures"""
+                                if depth > max_depth:
+                                    return None
+                                
+                                if isinstance(obj, str) and len(obj.strip()) > 10:
+                                    return obj.strip()
+                                
+                                if isinstance(obj, dict):
+                                    # Check common text fields
+                                    for key in ["text", "content", "parts"]:
+                                        if key in obj:
+                                            result = extract_text_recursive(obj[key], depth + 1, max_depth)
+                                            if result:
+                                                return result
+                                    # Recursively check all values
+                                    for value in obj.values():
+                                        result = extract_text_recursive(value, depth + 1, max_depth)
+                                        if result:
+                                            return result
+                                
+                                if isinstance(obj, list):
+                                    for item in obj:
+                                        result = extract_text_recursive(item, depth + 1, max_depth)
+                                        if result:
+                                            return result
+                                
+                                return None
+                            
+                            # Try standard parsing first
                             if "content" in candidate:
                                 content = candidate["content"]
                                 print(f"[QuizGen] Content type: {type(content)}, keys: {content.keys() if isinstance(content, dict) else 'N/A'}")
@@ -257,16 +315,10 @@ Tạo {num_mc + num_tf} câu hỏi:"""
                                         elif isinstance(part, str):
                                             full_response = part
                                 
-                                # Case 2: content chỉ có role, không có parts - thử lấy từ candidate trực tiếp
+                                # Case 2: content chỉ có role, không có parts - thử recursive search
                                 elif isinstance(content, dict) and "role" in content and "parts" not in content:
-                                    print(f"[QuizGen] ⚠️ Content only has 'role', trying alternative parsing...")
-                                    # Thử tìm parts ở level khác hoặc trong data
-                                    if "parts" in candidate:
-                                        parts = candidate["parts"]
-                                        if isinstance(parts, list) and len(parts) > 0:
-                                            part = parts[0]
-                                            if isinstance(part, dict) and "text" in part:
-                                                full_response = part["text"]
+                                    print(f"[QuizGen] ⚠️ Content only has 'role', trying recursive search...")
+                                    full_response = extract_text_recursive(candidate)
                                 
                                 # Case 3: content is a dict with "text" directly
                                 elif isinstance(content, dict) and "text" in content:
@@ -284,7 +336,12 @@ Tạo {num_mc + num_tf} câu hỏi:"""
                                     elif isinstance(first_item, str):
                                         full_response = first_item
                             
-                            # Fallback: check candidate directly
+                            # Fallback: recursive search in entire candidate
+                            if not full_response:
+                                print(f"[QuizGen] Trying recursive search in candidate...")
+                                full_response = extract_text_recursive(candidate)
+                            
+                            # Final fallback: check candidate directly
                             if not full_response:
                                 if "text" in candidate:
                                     full_response = candidate["text"]
@@ -292,7 +349,7 @@ Tạo {num_mc + num_tf} câu hỏi:"""
                                     full_response = candidate
                             
                             if not full_response:
-                                print(f"[QuizGen] ❌ Could not extract text from candidate: {candidate}")
+                                print(f"[QuizGen] ❌ Could not extract text from candidate")
                                 print(f"[QuizGen] Full candidate structure: {json.dumps(candidate, indent=2, ensure_ascii=False)}")
                                 raise Exception("Could not extract text from Gemini response")
                             
