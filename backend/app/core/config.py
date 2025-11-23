@@ -23,6 +23,12 @@ class Settings(BaseModel):
     llm_model: str = os.getenv("LLM_MODEL", "gemini-2.5-flash")
     llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "2048"))  # Increased for Gemini
     rag_max_context_length: int = int(os.getenv("RAG_MAX_CONTEXT_LENGTH", "20000"))  # Max chars in context
+    
+    # RAG Configuration
+    rag_low_similarity_threshold: float = float(os.getenv("RAG_LOW_SIMILARITY_THRESHOLD", "0.4"))
+    rag_low_confidence_threshold: float = float(os.getenv("RAG_LOW_CONFIDENCE_THRESHOLD", "0.3"))
+    rag_max_context_length_tokens: int = int(os.getenv("RAG_MAX_CONTEXT_LENGTH_TOKENS", "8000"))
+    rag_max_references: int = int(os.getenv("RAG_MAX_REFERENCES", "5"))
     admin_emails: set[str] = Field(
         default_factory=lambda: {
             email.strip().lower()
