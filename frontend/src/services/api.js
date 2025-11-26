@@ -98,7 +98,7 @@ export async function deleteDocument(documentId) {
 // Query APIs
 export async function askQuestion(
   question,
-  documentId = null,
+  documentIds, // ← THAY ĐỔI: Array thay vì single ID
   conversationId = null,
   signal = null
 ) {
@@ -111,12 +111,16 @@ export async function askQuestion(
     "/query/ask",
     {
       question,
-      document_id: documentId,
-      conversation_id: conversationId, // To group Q&As in the same conversation
-      // top_k removed - now auto-calculated by backend based on context length
+      document_ids: documentIds, // ← MỚI: Array
+      conversation_id: conversationId,
     },
     config
   );
+
+  if (!data) {
+    throw new Error("No data received from server");
+  }
+
   return data;
 }
 

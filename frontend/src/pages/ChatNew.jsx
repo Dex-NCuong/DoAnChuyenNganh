@@ -254,6 +254,25 @@ function Message({ message, isUser, previousMessage }) {
     messageText = messageText
       .replace(/\[?CHUNKS_USED:\s*[\d,\s]+\]?/gi, "")
       .trim();
+
+    // Remove chunk references like "(chunk 76)", "chunk 76", "(chunk 265, 273)", etc.
+    // Pattern: (chunk X) or chunk X or (chunk X, Y, Z) - case insensitive
+    messageText = messageText
+      // Remove chunk references with parentheses: (chunk 76), (chunk 265, 273)
+      .replace(/\(\s*chunk\s+\d+(?:\s*,\s*\d+)*\s*\)/gi, "")
+      // Remove chunk references without parentheses: chunk 76, chunk 265, 273
+      .replace(/\s+chunk\s+\d+(?:\s*,\s*\d+)*/gi, "")
+      // Clean up extra spaces, commas, and parentheses left behind
+      .replace(/\s*,\s*,/g, ",") // Double commas
+      .replace(/\s*,\s*\./g, ".") // Comma before period
+      .replace(/\s*,\s*\)/g, ")") // Comma before closing paren
+      .replace(/\(\s*,/g, "(") // Opening paren with comma
+      .replace(/\(\s*\)/g, "") // Empty parentheses
+      .replace(/\s*\(\s*/g, " (") // Space before opening paren
+      .replace(/\s{2,}/g, " ") // Multiple spaces
+      .replace(/^\s*,\s*/, "") // Leading comma
+      .replace(/\s*,\s*$/, "") // Trailing comma
+      .trim();
   }
 
   const calendarMetadata = !isUser ? message?.calendarMetadata || {} : {};
@@ -296,42 +315,51 @@ function Message({ message, isUser, previousMessage }) {
               {messageText && typeof messageText === "string" ? (
                 <ReactMarkdown
                   components={{
-                    // Custom styling for markdown elements
+                    // Custom styling for markdown elements - Technical document format
                     h1: ({ node, ...props }) => (
-                      <h1 className="text-xl font-bold mb-2 mt-4" {...props} />
+                      <h1
+                        className="text-2xl font-bold mb-4 mt-6 text-gray-900 border-b-2 border-gray-300 pb-2"
+                        {...props}
+                      />
                     ),
                     h2: ({ node, ...props }) => (
-                      <h2 className="text-lg font-bold mb-2 mt-3" {...props} />
+                      <h2
+                        className="text-xl font-bold mb-3 mt-5 text-gray-800 border-b border-gray-200 pb-1.5"
+                        {...props}
+                      />
                     ),
                     h3: ({ node, ...props }) => (
                       <h3
-                        className="text-base font-bold mb-1 mt-2"
+                        className="text-lg font-semibold mb-2 mt-4 text-gray-700"
                         {...props}
                       />
                     ),
                     p: ({ node, ...props }) => (
-                      <p className="mb-2" {...props} />
+                      <p className="mb-3 leading-7 text-gray-700" {...props} />
                     ),
                     ul: ({ node, ...props }) => (
                       <ul
-                        className="list-disc list-inside mb-2 space-y-1"
+                        className="list-disc list-outside mb-4 space-y-2 ml-6"
                         {...props}
                       />
                     ),
                     ol: ({ node, ...props }) => (
                       <ol
-                        className="list-decimal list-inside mb-2 space-y-1"
+                        className="list-decimal list-outside mb-4 space-y-2 ml-6"
                         {...props}
                       />
                     ),
                     li: ({ node, ...props }) => (
-                      <li className="ml-4" {...props} />
+                      <li className="ml-2 leading-6 text-gray-700" {...props} />
                     ),
                     strong: ({ node, ...props }) => (
-                      <strong className="font-bold" {...props} />
+                      <strong className="font-bold text-gray-900" {...props} />
                     ),
                     em: ({ node, ...props }) => (
-                      <em className="italic" {...props} />
+                      <em className="italic text-gray-700" {...props} />
+                    ),
+                    hr: ({ node, ...props }) => (
+                      <hr className="my-4 border-gray-300" {...props} />
                     ),
                     code: ({ node, inline, ...props }) =>
                       inline ? (
@@ -419,11 +447,12 @@ export default function ChatNew() {
   const [messages, setMessages] = useState([]);
   const conversationIdMap = useRef({}); // Map conversation_id -> list of history records
   const [question, setQuestion] = useState("");
-  const [selectedDoc, setSelectedDoc] = useState("");
+  const [selectedDocs, setSelectedDocs] = useState([]); // ← THAY ĐỔI: Array thay vì string
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [error, setError] = useState("");
+  const [showDocumentSelector, setShowDocumentSelector] = useState(true); // State để ẩn/hiện phần chọn tài liệu
   const [contextMenu, setContextMenu] = useState(null);
   const [renamingId, setRenamingId] = useState(null);
   const [newTitle, setNewTitle] = useState("");
@@ -778,8 +807,16 @@ export default function ChatNew() {
     if (!question.trim() || loading) return;
 
     // Kiểm tra bắt buộc phải chọn tài liệu
-    if (!selectedDoc) {
-      setError("Vui lòng chọn một tài liệu trước khi gửi câu hỏi");
+    if (!selectedDocs || selectedDocs.length === 0) {
+      // ← THAY ĐỔI
+      setError("Vui lòng chọn ít nhất một tài liệu trước khi gửi câu hỏi");
+      return;
+    }
+
+    // Limit: tối đa 5 documents
+    if (selectedDocs.length > 5) {
+      // ← THÊM
+      setError("Chỉ có thể chọn tối đa 5 tài liệu cùng lúc");
       return;
     }
 
@@ -792,6 +829,7 @@ export default function ChatNew() {
 
     console.log(`[ChatNew] ===== Starting new request ${requestId} =====`);
     console.log(`[ChatNew] Question: "${submittedQuestion}"`);
+    console.log(`[ChatNew] Selected documents: ${selectedDocs.length} file(s)`); // ← THAY ĐỔI
     console.log(`[ChatNew] Active conversation: ${activeConversationId}`);
 
     // Nếu vẫn còn message tạm từ lần trước (do lỗi nào đó), dọn sạch trước
@@ -853,7 +891,7 @@ export default function ChatNew() {
 
       const result = await askQuestion(
         submittedQuestion,
-        selectedDoc || null,
+        selectedDocs, // ← THAY ĐỔI: Pass array thay vì single ID
         conversationIdForBackend,
         controller.signal
       );
@@ -943,6 +981,11 @@ export default function ChatNew() {
             references.map((ref) => ref.document_id).filter((docId) => !!docId)
           )
         );
+        // THÊM: Log documents được search vs documents có references
+        const documentsSearched = result.documents_searched || selectedDocs;
+        console.log(
+          `[ChatNew] Documents searched: ${documentsSearched.length}, Documents with refs: ${documentIds.length}`
+        );
         const newMessages = [
           ...messagesToAppendTo,
           { text: submittedQuestion, isUser: true },
@@ -954,8 +997,8 @@ export default function ChatNew() {
               question: submittedQuestion,
               answer: String(result.answer || ""),
               references,
-              documentId: selectedDoc || null,
-              documentIds,
+              documentId: null, // ← DEPRECATED: không dùng nữa
+              documentIds, // ← THAY ĐỔI: Dùng array
               historyId: result.history_id,
               conversationId: returnedConversationId || targetConversationId,
             },
@@ -982,7 +1025,7 @@ export default function ChatNew() {
           answer: result.answer,
           references,
           created_at: new Date().toISOString(),
-          document_id: selectedDoc || null,
+          document_id: selectedDocs[0] || null, // ← THAY ĐỔI: Use first doc for backward compatibility
           conversation_id: returnedConversationId || targetConversationId,
           document_ids: documentIds,
         });
@@ -1517,7 +1560,7 @@ export default function ChatNew() {
               setActiveConversationId(null);
               setMessages([]);
               setQuestion("");
-              setSelectedDoc("");
+              setSelectedDocs([]); // ← THAY ĐỔI: Clear array
             }}
             className="w-full px-4 py-2.5 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-lg font-medium transition-colors flex items-center justify-center"
           >
@@ -1620,19 +1663,103 @@ export default function ChatNew() {
         {/* Input Area */}
         <div className="border-t border-gray-200 bg-white p-4">
           <div className="max-w-3xl mx-auto">
+            {/* Multi-select documents dropdown */}
             <div className="mb-3">
-              <select
-                value={selectedDoc}
-                onChange={(e) => setSelectedDoc(e.target.value)}
-                className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none"
-              >
-                <option value="">Chọn tài liệu</option>
-                {documents.map((doc) => (
-                  <option key={doc.id} value={doc.id}>
-                    {doc.filename}
-                  </option>
-                ))}
-              </select>
+              {/* Header với nút toggle */}
+              <div className="flex items-center justify-between mb-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDocumentSelector(!showDocumentSelector)}
+                  className="flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-purple-600 transition-colors"
+                >
+                  <span className="text-lg">
+                    {showDocumentSelector ? "▼" : "▶"}
+                  </span>
+                  <span>📚 Chọn tài liệu</span>
+                  {selectedDocs.length > 0 && (
+                    <span className="ml-2 px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold">
+                      {selectedDocs.length}
+                    </span>
+                  )}
+                </button>
+                {!showDocumentSelector && selectedDocs.length > 0 && (
+                  <span className="text-xs text-gray-500">
+                    Đã chọn: {selectedDocs.length} tài liệu
+                  </span>
+                )}
+              </div>
+
+              {/* Collapsible content */}
+              {showDocumentSelector && (
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium text-gray-700 flex-shrink-0">
+                    📚 Chọn tài liệu:
+                  </label>
+
+                  {/* Custom multi-select với checkboxes */}
+                  <div className="flex-1 relative">
+                    <select
+                      multiple
+                      value={selectedDocs}
+                      onChange={(e) => {
+                        const selected = Array.from(
+                          e.target.selectedOptions,
+                          (option) => option.value
+                        );
+
+                        // Limit: tối đa 5 documents
+                        if (selected.length > 5) {
+                          setError("Chỉ có thể chọn tối đa 5 tài liệu");
+                          return;
+                        }
+
+                        setSelectedDocs(selected);
+                        setError(""); // Clear error nếu valid
+                        console.log(
+                          `[ChatNew] Selected ${selected.length} document(s)`
+                        );
+                      }}
+                      className="w-full px-3 py-2 text-sm border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none"
+                      style={{ minHeight: "80px" }}
+                    >
+                      {documents.map((doc) => (
+                        <option
+                          key={doc.id}
+                          value={doc.id}
+                          className="py-2 px-2 hover:bg-purple-50 cursor-pointer"
+                        >
+                          {selectedDocs.includes(doc.id) ? "✓ " : "  "}
+                          {doc.filename}
+                        </option>
+                      ))}
+                    </select>
+
+                    {/* Display selected count */}
+                    {selectedDocs.length > 0 && (
+                      <div className="mt-1 flex items-center justify-between text-xs">
+                        <span className="text-purple-600 font-medium">
+                          Đã chọn: {selectedDocs.length} tài liệu
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedDocs([]);
+                            setError("");
+                          }}
+                          className="text-gray-500 hover:text-red-600 underline"
+                        >
+                          Bỏ chọn tất cả
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Helper text */}
+                    <p className="mt-1 text-xs text-gray-500">
+                      💡 Giữ Ctrl/Cmd để chọn nhiều tài liệu (tối đa 5)
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
             <form onSubmit={handleSubmit} className="flex items-end gap-2">
               <div className="flex-1 relative">

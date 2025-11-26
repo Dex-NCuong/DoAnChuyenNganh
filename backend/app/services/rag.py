@@ -2,7 +2,7 @@ import asyncio
 import json
 from datetime import datetime
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import httpx
 
@@ -28,71 +28,51 @@ from ..services.embedding import EmbeddingService
 
 
 def detect_query_type_fast(question: str) -> str:
-    """Enhanced query type detection với support cho code và reasoning."""
+    """Enhanced query type detection với SECTION_OVERVIEW ưu tiên cao nhất."""
     q = question.lower()
     
-    # PRIORITY 1: Code analysis questions (Tầng 3)
-    code_patterns = [
-        r'phân\s*tích.*?(code|đoạn\s*code|lỗi)',
-        r'sửa.*?(code|lỗi|bug)',
-        r'đoạn\s*code.*?(sai|lỗi|bug|đúng)',
-        r'chấm\s*điểm.*?code',
-        r'code.*?(có\s*vấn\s*đề|sai|lỗi)',
-        r'tìm\s*lỗi.*?code',
-    ]
-    if any(re.search(p, q) for p in code_patterns):
-        return "CODE_ANALYSIS"
-    
-    # PRIORITY 2: Exercise generation (Tầng 3)
-    exercise_patterns = [
-        r'tạo.*?bài\s*tập',
-        r'viết.*?(function|hàm).*?dựa\s*trên',
-        r'áp\s*dụng.*?(vào|để.*?viết).*?code',
-        r'cho.*?ví\s*dụ.*?code',
-        r'viết.*?code.*?theo',
-    ]
-    if any(re.search(p, q) for p in exercise_patterns):
-        return "EXERCISE_GENERATION"
-    
-    # PRIORITY 3: Multi-concept reasoning (Tầng 4)
-    reasoning_patterns = [
-        r'dựa\s*trên.*?(và|,).*?(hãy|viết|giải\s*thích)',
-        r'kết\s*hợp.*?(và|,)',
-        r'áp\s*dụng.*?(và|,)',
-        r'(hoisting|scope|closure).*?(và|,).*(function|loop|variable)',
-        r'giải\s*thích.*?cơ\s*chế.*?(và|,)',
-    ]
-    if any(re.search(p, q) for p in reasoning_patterns):
-        return "MULTI_CONCEPT_REASONING"
-    
-    # PRIORITY 4: Section query - CRITICAL FIX: More comprehensive patterns
+    # PRIORITY 1: SECTION_OVERVIEW - CRITICAL FIX
+    # Patterns phải cover: "chi tiết hơn về PHẦN 8", "PHẦN 8 nói gì", "nội dung PHẦN 8"
     section_patterns = [
+        # Original patterns
         r'(phần|chương|part)\s+\d+\s+(có|nói|là|gồm)',
         r'nội\s*dung\s+(phần|chương|part)\s+\d+',
-        r'chi\s*tiết.*?(phần|chương|part)\s+\d+',
+        # CRITICAL NEW PATTERNS - More aggressive
+        r'(phần|chương|part)\s+\d+',  # ANY mention of "PHẦN X"
+        r'chi\s*tiết.*?(phần|chương|part)\s+\d+',  # "chi tiết hơn về PHẦN 8"
         r'rõ\s+hơn.*?(phần|chương|part)\s+\d+',
-        # NEW PATTERNS - More comprehensive
-        r'nội\s*dung.*?(phần|chương|part)\s+\d+',
-        r'(phần|chương|part)\s+\d+.*?(gì|nào|những\s*gì)',
+        r'về\s+(phần|chương|part)\s+\d+',
+        r'(phần|chương|part)\s+\d+[:：]',  # "PHẦN 8: Title"
         r'trong\s+(phần|chương|part)\s+\d+',
+        r'(phần|chương|part)\s+\d+.*?(gì|nào|những\s*gì|bao\s*gồm)',
+        r'nội\s*dung.*?(phần|chương|part)\s+\d+',
         r'(phần|chương|part)\s+\d+\s+bao\s*gồm',
         r'tìm\s*hiểu.*?(phần|chương|part)\s+\d+',
         r'giới\s*thiệu.*?(phần|chương|part)\s+\d+',
     ]
+    
+    # If question mentions "PHẦN X" in ANY form → SECTION_OVERVIEW
     if any(re.search(p, q) for p in section_patterns):
         return "SECTION_OVERVIEW"
     
-    # PRIORITY 5: Document overview
+    # PRIORITY 2: DOCUMENT_OVERVIEW
     overview_patterns = [
         r'trong\s+(file|tài\s*liệu)\s+này\s+có\s+gì',
         r'(file|tài\s*liệu)\s+này\s+(nói|viết|đề\s*cập)\s+về\s+gì',
         r'tổng\s*quan\s+(file|tài\s*liệu)',
         r'mục\s*lục',
+        # CRITICAL: Thêm patterns cho "bao nhiêu phần"
+        r'bao\s*nhiêu\s+(phần|chương|module|mục)',
+        r'(file|tài\s*liệu).*?bao\s*nhiêu\s+(phần|chương|module)',
+        r'(file|tài\s*liệu).*?nói\s+về\s+bao\s*nhiêu\s+(phần|chương)',
+        r'có\s+bao\s*nhiêu\s+(phần|chương|module)',
+        r'liệt\s*kê.*?(phần|chương|module)',
+        r'tất\s*cả.*?(phần|chương|module)',
     ]
     if any(re.search(p, q) for p in overview_patterns):
         return "DOCUMENT_OVERVIEW"
     
-    # PRIORITY 6: Comparative/synthesis questions (Tầng 2)
+    # PRIORITY 3: COMPARE_SYNTHESIZE - BEFORE other patterns
     comparative_patterns = [
         r'so\s*sánh',
         r'khác.*?gì',
@@ -104,6 +84,40 @@ def detect_query_type_fast(question: str) -> str:
     ]
     if any(re.search(p, q) for p in comparative_patterns):
         return "COMPARE_SYNTHESIZE"
+    
+    # PRIORITY 4: Code analysis questions (Tầng 3)
+    code_patterns = [
+        r'phân\s*tích.*?(code|đoạn\s*code|lỗi)',
+        r'sửa.*?(code|lỗi|bug)',
+        r'đoạn\s*code.*?(sai|lỗi|bug|đúng)',
+        r'chấm\s*điểm.*?code',
+        r'code.*?(có\s*vấn\s*đề|sai|lỗi)',
+        r'tìm\s*lỗi.*?code',
+    ]
+    if any(re.search(p, q) for p in code_patterns):
+        return "CODE_ANALYSIS"
+    
+    # PRIORITY 5: Exercise generation (Tầng 3)
+    exercise_patterns = [
+        r'tạo.*?bài\s*tập',
+        r'viết.*?(function|hàm).*?dựa\s*trên',
+        r'áp\s*dụng.*?(vào|để.*?viết).*?code',
+        r'cho.*?ví\s*dụ.*?code',
+        r'viết.*?code.*?theo',
+    ]
+    if any(re.search(p, q) for p in exercise_patterns):
+        return "EXERCISE_GENERATION"
+    
+    # PRIORITY 6: Multi-concept reasoning (Tầng 4)
+    reasoning_patterns = [
+        r'dựa\s*trên.*?(và|,).*?(hãy|viết|giải\s*thích)',
+        r'kết\s*hợp.*?(và|,)',
+        r'áp\s*dụng.*?(và|,)',
+        r'(hoisting|scope|closure).*?(và|,).*(function|loop|variable)',
+        r'giải\s*thích.*?cơ\s*chế.*?(và|,)',
+    ]
+    if any(re.search(p, q) for p in reasoning_patterns):
+        return "MULTI_CONCEPT_REASONING"
     
     # PRIORITY 7: List/enumerate questions
     if any(kw in q for kw in ["liệt kê", "cho ví dụ", "ví dụ cho", "bao nhiêu"]):
@@ -125,7 +139,8 @@ def build_gemini_optimized_prompt(
     question: str,
     context_text: str,
     chunk_similarities: List[float],
-    query_type: str = "DIRECT"
+    query_type: str = "DIRECT",
+    selected_documents: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """
     Gemini 2.5 Flash optimized prompt - SHORT, STRICT, STRUCTURED.
@@ -137,6 +152,8 @@ def build_gemini_optimized_prompt(
     
     # CRITICAL FIX: Mở rộng patterns cho SECTION_OVERVIEW detection
     section_query_patterns = [
+        # CRITICAL FIX: Pattern cơ bản nhất - bắt MỌI mention của "PHẦN X"
+        r'(phần|chương|part)\s+(\d+)',  # Bắt bất kỳ mention của "PHẦN X" hoặc "phần 4"
         r'(phần|chương|part)\s+(\d+)\s+(có|nói|là|gồm)',  # "phần 8 có gì"
         r'nội\s*dung\s+(phần|chương|part)\s+(\d+)',      # "nội dung phần 8"
         r'(phần|chương|part)\s+(\d+)\s+.*?(gì|nào)',      # "phần 8 nói gì"
@@ -187,6 +204,13 @@ def build_gemini_optimized_prompt(
         r'(file|tài\s*liệu)\s+này\s+(nói|viết|đề\s*cập)\s+về\s+gì',
         r'tổng\s*quan\s+(file|tài\s*liệu)',
         r'mục\s*lục',
+        # CRITICAL: Thêm patterns cho "bao nhiêu phần"
+        r'bao\s*nhiêu\s+(phần|chương|module|mục)',
+        r'(file|tài\s*liệu).*?bao\s*nhiêu\s+(phần|chương|module)',
+        r'(file|tài\s*liệu).*?nói\s+về\s+bao\s*nhiêu\s+(phần|chương)',
+        r'có\s+bao\s*nhiêu\s+(phần|chương|module)',
+        r'liệt\s*kê.*?(phần|chương|module)',
+        r'tất\s*cả.*?(phần|chương|module)',
     ])
     
     # Determine mode based on query_type
@@ -238,47 +262,118 @@ def build_gemini_optimized_prompt(
     # Check similarity threshold
     max_sim = max(chunk_similarities) if chunk_similarities else 0
     auto_fallback_warning = ""
-    if max_sim < 0.4:
-        auto_fallback_warning = "\n⚠️ WARNING: Max similarity < 0.4 → Must return FALLBACK."
+    # CRITICAL FIX: Giảm threshold cho DOCUMENT_OVERVIEW để bao gồm chunks có similarity thấp
+    if mode == "DOCUMENT_OVERVIEW":
+        similarity_threshold = 0.25  # Giảm từ 0.4 xuống 0.25 cho DOCUMENT_OVERVIEW
+    else:
+        similarity_threshold = 0.4  # Giữ nguyên cho các query type khác
+    
+    if max_sim < similarity_threshold:
+        auto_fallback_warning = f"\n⚠️ WARNING: Max similarity < {similarity_threshold} → Must return FALLBACK."
     
     # Build mode-specific instructions
     mode_instructions = ""
+    multi_doc_instruction = ""
     
     if mode == "DOCUMENT_OVERVIEW":
         mode_instructions = """
 
 ## 📚 DOCUMENT OVERVIEW MODE
 
-User is asking for a complete overview of the entire document.
+User is asking for a complete overview of the entire document (e.g., "bao nhiêu phần", "có gì trong file", "liệt kê tất cả phần").
 
-**MANDATORY STEPS:**
-1. **Find TABLE OF CONTENTS chunk:** Look for chunks containing "MỤC LỤC" or multiple "PHẦN X"
-2. **List ALL main sections:** Extract all section headings (PHẦN 1, PHẦN 2, ..., PHẦN 10)
-3. **Describe each section:** Provide 1-2 sentences describing what each section covers
-4. **Use subsection info:** If available, mention key subsections (e.g., "8.1 String, 8.2 Function")
+**CRITICAL: MULTI-DOCUMENT HANDLING**
+If multiple documents are selected (you will see chunks from different files):
+- **Process EACH document SEPARATELY**
+- For each document, scan ALL chunks from that document
+- Answer format: "Theo tài liệu [filename], tài liệu này bao gồm [X] phần..."
+- If user asks about multiple files (e.g., "File A có bao nhiêu phần? File B có bao nhiêu module?"), answer BOTH questions separately
+- DO NOT mix sections from different documents - clearly separate by document name
 
-**OUTPUT FORMAT:**
+**MANDATORY STEPS (MUST FOLLOW IN ORDER):**
+1. **Identify which document(s) to process:**
+   - If question mentions specific files (e.g., "File Javascript", "File COCOMO"), process those files
+   - If question asks about "file này" or "file này có gì", process ALL selected documents separately
+   - Group chunks by document_id (check chunk metadata or document filename)
+
+2. **For EACH document, systematically scan ALL chunks:** 
+   - Go through EVERY single chunk from that document
+   - Look for patterns: "PHẦN 1", "PHẦN 2", "PHẦN 3", ..., "PHẦN 10", "Chương 1", "Module 1", etc.
+   - Extract the FULL section title (e.g., "PHẦN 1: Giới thiệu về Javascript")
+   - Create a list of ALL unique sections found for THIS document
+
+3. **Find TABLE OF CONTENTS chunk for each document:** 
+   - Look for chunks containing "MỤC LỤC" or multiple "PHẦN X" headings from the same document
+   - This is the most reliable source for complete section list
+   - Use it to verify your extracted list
+
+4. **Build complete section list for each document:**
+   - Combine sections from TOC chunk + sections found in other chunks from the SAME document
+   - Remove duplicates
+   - Sort by section number (PHẦN 1, PHẦN 2, ..., PHẦN 10)
+   - If you find PHẦN 1, 2, 3, 5, 7, 9 → you MUST check if PHẦN 4, 6, 8, 10 exist in other chunks from the SAME document
+
+5. **List ALL main sections for each document:** 
+   - Extract ALL section headings found (PHẦN 1, PHẦN 2, PHẦN 3, ..., PHẦN N)
+   - DO NOT SKIP ANY - if you see PHẦN 1, 2, 3, 5, 7, 9, you MUST check for 4, 6, 8, 10
+   - If document has 10 parts, list ALL 10 parts
+
+6. **Count sections for each document:** 
+   - If user asks "bao nhiêu phần", provide the exact count AND list all of them for EACH document
+   - Format: "Theo tài liệu [filename], tài liệu này có [X] phần: [list all parts]"
+
+7. **Describe each section:** 
+   - For each section found, provide 1-2 sentences describing what it covers
+   - Use information from chunks that mention that section
+   - Clearly indicate which document each section belongs to
+
+8. **Use subsection info:** 
+   - If available, mention key subsections (e.g., "8.1 String, 8.2 Function")
+
+**OUTPUT FORMAT (Single Document):**
 ```
-Tài liệu này bao gồm các phần sau:
+Tài liệu này bao gồm [X] phần sau:
 
 1. **PHẦN 1: [Title from document]** - [2-3 sentences describing content]
 
 2. **PHẦN 2: [Title]** - [2-3 sentences describing content]
 
-3. **PHẦN 3: [Title]** - [2-3 sentences describing content]
-
 ...
 
-10. **PHẦN 10: [Title]** - [2-3 sentences describing content]
+[X]. **PHẦN X: [Title]** - [2-3 sentences describing content]
 
 [Cite chunks used]
 ```
 
-**CRITICAL RULES:**
-- MUST list ALL main sections (don't skip any)
+**OUTPUT FORMAT (Multiple Documents):**
+```
+Theo tài liệu [filename1], tài liệu này bao gồm [X] phần sau:
+
+1. **PHẦN 1: [Title]** - [description]
+2. **PHẦN 2: [Title]** - [description]
+...
+
+Theo tài liệu [filename2], tài liệu này có [Y] module sau:
+
+1. **Module 1: [Title]** - [description]
+2. **Module 2: [Title]** - [description]
+...
+
+[Cite chunks used from both documents]
+```
+
+**CRITICAL RULES (MUST FOLLOW):**
+- ⚠️ **MUST process EACH document separately** - Do NOT mix sections from different documents
+- ⚠️ **MUST scan EVERY chunk systematically** - Go through chunks one by one, extract ALL "PHẦN X" patterns
+- ⚠️ **MUST list ALL main sections for each document** - If you find PHẦN 1, 2, 3, 5, 7, 9, you MUST check for PHẦN 4, 6, 8, 10 in other chunks from the SAME document
+- ⚠️ **DO NOT SKIP ANY PART** - If document has PHẦN 1-10, list ALL 10 parts, not just 3-4 parts
+- ⚠️ **Check for gaps** - If you see PHẦN 1, 2, 3, 5, 7, 9 → scan more chunks from the SAME document to find PHẦN 4, 6, 8, 10
+- ⚠️ **Use ALL chunks from each document** - Don't rely on just a few chunks, scan through ALL provided chunks from each document
+- ⚠️ **If user asks about multiple files, answer BOTH** - Do NOT ignore any file mentioned in the question
 - Use section titles from document (don't invent titles)
-- If TABLE OF CONTENTS chunk exists, prioritize it
-- Confidence should be 0.95 if TABLE OF CONTENTS found, 0.85 otherwise
+- If TABLE OF CONTENTS chunk exists, use it as primary source but still verify by scanning other chunks from the SAME document
+- If user asks "bao nhiêu phần", answer format: "Theo tài liệu [filename], tài liệu này có [X] phần: [list all parts with numbers]"
+- Confidence should be 0.95 if TABLE OF CONTENTS found AND all sections listed, 0.85 if sections found but no TOC, 0.70 if some sections might be missing
 
 **CRITICAL OUTPUT FORMAT (MUST BE VALID JSON):**
 ```json
@@ -455,20 +550,28 @@ User wants to compare concepts or synthesize knowledge from multiple sections.
 3. **Compare**: Show similarities and differences
 4. **Synthesize**: Create coherent understanding
 
-**OUTPUT FORMAT (for comparison):**
+**OUTPUT FORMAT (for comparison - USE PROSE, NOT TABLES):**
 ```
-So sánh [A] và [B]:
+**[Item A]: [Category]**
+- Thông tin 1 từ chunk X: [chi tiết]
+- Thông tin 2 từ chunk Y: [chi tiết]
+- Đặc điểm nổi bật: [mô tả]
 
-**Giống nhau:**
-- [Point from chunks X, Y]
+**[Item B]: [Category]**
+- Thông tin 1 từ chunk A: [chi tiết]
+- Thông tin 2 từ chunk B: [chi tiết]
+- Đặc điểm nổi bật: [mô tả]
 
-**Khác nhau:**
-| Aspect | [A] | [B] |
-|--------|-----|-----|
-| [Aspect 1] | [from chunk X] | [from chunk Y] |
+**Kết nối / Khác biệt:**
+[Explain how A relates to B, differences, tradeoffs]
 
-[Cite chunks used]
+[Citations: Chunk X, Y, Z]
 ```
+
+**CRITICAL: DO NOT use markdown tables (| col1 | col2 |)**
+- Tables are hard to parse when LLM returns plain text
+- Use structured prose format instead
+- Each item gets its own section with bullet points
 
 **CRITICAL RULES:**
 - MUST find chunks for ALL items being compared
@@ -480,55 +583,104 @@ So sánh [A] và [B]:
     elif is_section_query and section_num:
         mode_instructions = f"""
 
-## 🎯 SECTION OVERVIEW QUERY DETECTED (MANDATORY FORMAT)
+## 🎯 SECTION OVERVIEW MODE - MỤC TIÊU: LIỆT KÊ HẾT SUBSECTIONS
 
-User is asking: "PHẦN {section_num} nói về gì?"
+User asks about: "PHẦN {section_num}"
 
-**CRITICAL RULES - VIOLATION = SYSTEM FAILURE:**
-1. ✅ YOU MUST return answer_type = "SECTION_OVERVIEW"
-2. ✅ YOU MUST NOT return "FALLBACK" or "TOO_BROAD"
-3. ✅ Chunks about PHẦN {section_num} ARE AVAILABLE - use them!
+**YOUR JOB:**
+1. Find ALL chunks containing "PHẦN {section_num}"
+2. Extract section title + **ALL subsections** (đừng bỏ sót!)
+3. Write 2-3 sentences per subsection
 
-**MANDATORY OUTPUT STRUCTURE:**
+**CRITICAL RULES:**
+- ✅ Nếu PHẦN {section_num} có 8 subsections → phải list HẾT 8
+- ✅ Nếu thiếu thông tin về subsection nào → ghi "Nội dung chi tiết cần bổ sung"
+- ✅ KHÔNG BAO GIỜ return FALLBACK nếu tìm thấy chunks chứa "PHẦN {section_num}"
+- ✅ Confidence = 0.90 nếu tìm thấy chunks
+
+## CRITICAL: SECTION_OVERVIEW FORMAT VALIDATION
+
+**MUST follow this EXACT structure:**
+
 ```
-PHẦN {section_num}: [Extract FULL section title from chunks]
+PHẦN {section_num}: [Exact title from document]
 
 Nội dung chính bao gồm:
 
-1. **[Topic 1 name]** - [2-3 sentences explaining this topic using info from chunks]
+1. **[Subsection 1]** - [2-3 sentences description]
 
-2. **[Topic 2 name]** - [2-3 sentences explaining this topic]
+2. **[Subsection 2]** - [2-3 sentences description]
 
-3. **[Topic 3 name]** - [2-3 sentences explaining this topic]
+3. **[Subsection 3]** - [description]
 
-...
+... (list ALL subsections found in chunks)
 
-[Minimum 4-6 topics, cite chunk numbers used]
+[Citations: Chunk X, Y, Z]
 ```
 
-**EXTRACTION RULES:**
-- Search chunks for heading markers: "PHẦN {section_num}:", section titles, etc.
-- Extract section title from heading chunk
-- Extract **ALL subsection headings** (e.g., 8.1, 8.2, 8.3...) as topics
-- For each topic, synthesize 2-3 sentences from related chunks
-- **CRITICAL:** Don't stop at 2 topics - find ALL subsections
+**VALIDATION REQUIREMENTS:**
+- ✅ MUST have "PHẦN {section_num}:" heading (exact format)
+- ✅ MUST have "Nội dung chính bao gồm:" intro line
+- ✅ MUST list 4+ subsections (NEVER return just 1-2 subsections)
+- ✅ Each subsection MUST have format: `**Subsection Name** - description`
+- ✅ Output MUST be JSON (not plain text)
+- ❌ NEVER return markdown table format for comparisons
+- ❌ NEVER return plain text without JSON structure
 
-**CONFIDENCE RULES:**
-- If you found chunks with "PHẦN {section_num}" → confidence = 0.90-0.95
-- If chunks contain subsection numbers (8.1, 8.2) → confidence = 0.95
-- NEVER return confidence < 0.85 for section queries
+**OUTPUT FORMAT:**
+```
+PHẦN {section_num}: [Title from chunks]
 
-**DEBUG CHECK:**
-- Did I extract the section title? ✅/❌
-- Did I list ALL subsections (not just 2)? ✅/❌
-- Did I write 2-3 sentences per topic? ✅/❌
-- Did I cite chunk numbers? ✅/❌
+Nội dung chính bao gồm:
+
+1. **[Subsection 1]** - [Explanation from chunks]
+
+2. **[Subsection 2]** - [Explanation]
+
+... (liệt kê HẾT tất cả subsections)
+```
+
+**JSON OUTPUT:**
+{{
+  "answer": "PHẦN {section_num}: [title]\\n\\nNội dung chính bao gồm:\\n\\n1. **[Sub 1]** - ...\\n\\n2. **[Sub 2]** - ...\\n\\n... (HẾT tất cả subsections)",
+  "answer_type": "SECTION_OVERVIEW",
+  "chunks_used": [204, 205, ...],  # ← Phải có NHIỀU chunks
+  "confidence": 0.90,
+  "sentence_mapping": [...],
+  "sources": {{"from_document": true, "from_external_knowledge": false}}
+}}
+
+"""
+
+    if selected_documents:
+        doc_count = len(selected_documents)
+        doc_names = ", ".join(
+            [
+                (doc.get("filename") or doc.get("id") or f"Document {idx + 1}")
+                for idx, doc in enumerate(selected_documents)
+            ]
+        )
+        multi_doc_instruction = f"""
+
+## 🔀 MULTI-DOCUMENT QUERY HANDLING
+
+**CRITICAL:** User selected {doc_count} document(s): {doc_names}
+
+When answering:
+1. If the question references MULTIPLE documents → cite chunks from **ALL** relevant documents.
+2. When comparing information → explicitly mention each document (ví dụ: "Theo file A (chunk X)... trong khi file B (chunk Y)...").
+3. Make it clear which document each fact comes from using the format: "Theo [filename] (chunk N)..."
+4. Ensure `sentence_mapping` entries contain the correct `chunk` (which maps back to document_id).
+
+Example multi-document citation:
+"Theo Javascript-TuCobanToiNangCao.pdf (chunk 42), Promise được dùng cho async. Trong khi COCOMO.pdf (chunk 15) ước tính 425 nhân-tháng cho dự án."
 
 """
     
     prompt = f"""# SYSTEM RULES (DO NOT describe these rules, just follow them)
 
 {mode_instructions}
+{multi_doc_instruction}
 
 ## HARD FAILS (Violate any → immediate FALLBACK)
 1. DO NOT answer if info not in chunks
@@ -582,6 +734,7 @@ Example (CODE_ANALYSIS):
 ⚠️ CRITICAL: You MUST return ONLY a valid JSON object. NO text before or after JSON.
 ⚠️ DO NOT include markdown code blocks (```json).
 ⚠️ DO NOT include any explanation outside the JSON object.
+- Each section MUST be separated by blank lines (\n\n)
 
 Example of CORRECT output:
 {{
@@ -694,17 +847,28 @@ class RAGService:
 
             self.provider = "local"
     
-    def _determine_max_chunks_for_query(self, question: str, query_type: str) -> int:
+    def _determine_max_chunks_for_query(self, question: str, query_type: str, num_docs: int = 1) -> int:
         """Dynamically determine max chunks based on query complexity."""
         q_lower = question.lower()
         
-        # CRITICAL FIX: DOCUMENT_OVERVIEW cần NHIỀU chunks nhất
+        # CRITICAL FIX: Multi-doc queries need more chunks
+        # 2 files: 1.5x multiplier, 3+ files: 2.0x multiplier
+        if num_docs >= 3:
+            multiplier = 2.0  # 3+ files: 2x chunks
+        elif num_docs >= 2:
+            multiplier = 1.5  # 2 files: 1.5x chunks
+        else:
+            multiplier = 1.0  # Single file: no multiplier
+        
+        # CRITICAL FIX: DOCUMENT_OVERVIEW cần NHIỀU chunks nhất để scan toàn bộ document
         if query_type == "DOCUMENT_OVERVIEW":
-            return 50  # Đủ để cover toàn bộ mục lục + overview chunks
+            base = 150  # Tăng từ 50 lên 150 để scan đủ chunks
+            return int(base * multiplier)  # 100 → 150 cho multi-doc
         
         # CRITICAL FIX: SECTION_OVERVIEW cần chunks vừa phải
         if query_type == "SECTION_OVERVIEW":
-            return 30  # Đủ để cover toàn bộ subsections của 1 phần
+            base = 45  # Tăng từ 30 lên 45
+            return int(base * multiplier)  # 45 → 67 cho multi-doc
         
         # Tier 4 (Reasoning): Cần nhiều chunks
         if query_type in ["MULTI_CONCEPT_REASONING", "CODE_ANALYSIS", "EXERCISE_GENERATION"]:
@@ -717,25 +881,30 @@ class RAGService:
             concepts_found = sum(1 for kw in concept_keywords if kw in q_lower)
             
             if concepts_found >= 3:
-                return 30
+                base = 30
             elif concepts_found >= 2:
-                return 25
+                base = 25
             else:
-                return 20
+                base = 20
+            return int(base * multiplier)
         
         # Tier 2 (Compare/Synthesize): Cần chunks từ nhiều sections
         if query_type in ["COMPARE_SYNTHESIZE", "COMPARE"]:
             # Check if comparing 2+ items
             if any(word in q_lower for word in ["và", "với", "so với", ","]):
-                return 25  # Need chunks for multiple items
-            return 20
+                base = 25  # Need chunks for multiple items
+            else:
+                base = 20
+            return int(base * multiplier)
         
         # Tier 3 (List all / Enumerate)
         if any(kw in q_lower for kw in ["liệt kê", "tất cả", "bao nhiêu", "cho ví dụ"]):
-            return 20  # Need more chunks to find all items
+            base = 20  # Need more chunks to find all items
+            return int(base * multiplier)
         
         # Tier 1 (Basic retrieval)
-        return 15  # Default
+        base = 15  # Default
+        return int(base * multiplier)
     
     def _extract_section_from_content(self, content: str, file_type: str) -> Optional[str]:
         """Extract section/heading from content if it looks like a heading.
@@ -854,9 +1023,58 @@ class RAGService:
         # Try direct parse
         try:
             parsed = json.loads(cleaned)
+            
+            # CRITICAL FIX: Answer Type Validation with Auto-correction
+            VALID_ANSWER_TYPES = {
+                "DIRECT", "SECTION_OVERVIEW", "DOCUMENT_OVERVIEW",
+                "CODE_ANALYSIS", "EXERCISE_GENERATION",
+                "MULTI_CONCEPT_REASONING", "COMPARE_SYNTHESIZE",
+                "FALLBACK", "TOO_BROAD", "SYNTHESIS"
+            }
+            
+            answer_type = parsed.get("answer_type", "FALLBACK")
+            answer = parsed.get("answer", "")
+            confidence = parsed.get("confidence", 0.0)
+            
+            # Validate answer type
+            if answer_type not in VALID_ANSWER_TYPES:
+                print(f"[RAG] ⚠️ Invalid answer_type: {answer_type}, attempting auto-correction...")
+                
+                # Auto-correct based on content
+                answer_lower = answer.lower()
+                
+                # Check for SECTION_OVERVIEW markers
+                if re.search(r'PHẦN\s+\d+:', answer) or any(marker in answer_lower for marker in ['phần', 'nội dung chính', 'bao gồm']):
+                    answer_type = "SECTION_OVERVIEW"
+                    print(f"[RAG] Auto-corrected to SECTION_OVERVIEW")
+                
+                # Check for comparison markers
+                elif any(marker in answer_lower for marker in ["|", "giống", "khác", "so sánh", "tương tự", "khác biệt"]):
+                    answer_type = "COMPARE_SYNTHESIZE"
+                    print(f"[RAG] Auto-corrected to COMPARE_SYNTHESIZE")
+                
+                # Check for code analysis markers
+                elif "phân tích" in answer_lower or "code" in answer_lower or "function" in answer_lower:
+                    answer_type = "CODE_ANALYSIS"
+                    print(f"[RAG] Auto-corrected to CODE_ANALYSIS")
+                
+                # Default to DIRECT if has chunks, otherwise FALLBACK
+                else:
+                    chunks_used = parsed.get("chunks_used", [])
+                    if chunks_used:
+                        answer_type = "DIRECT"
+                        print(f"[RAG] Auto-corrected to DIRECT (has chunks)")
+                    else:
+                        answer_type = "FALLBACK"
+                        print(f"[RAG] Auto-corrected to FALLBACK (no chunks)")
+                
+                # Apply penalty for invalid type
+                confidence = max(0.5, confidence * 0.8)
+                parsed["answer_type"] = answer_type
+                parsed["confidence"] = confidence
+            
             # NEW: Validate SECTION_OVERVIEW responses
             if parsed.get("answer_type") == "SECTION_OVERVIEW":
-                answer = parsed.get("answer", "")
                 has_title = bool(re.search(r'PHẦN\s+\d+:', answer))
                 has_list_intro = "Nội dung chính bao gồm" in answer or "bao gồm:" in answer
                 topic_count = len(re.findall(r'\d+\.\s+\*\*', answer))
@@ -876,7 +1094,27 @@ class RAGService:
         match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group())
+                parsed = json.loads(match.group())
+                # Apply same type validation
+                VALID_ANSWER_TYPES = {
+                    "DIRECT", "SECTION_OVERVIEW", "DOCUMENT_OVERVIEW",
+                    "CODE_ANALYSIS", "EXERCISE_GENERATION",
+                    "MULTI_CONCEPT_REASONING", "COMPARE_SYNTHESIZE",
+                    "FALLBACK", "TOO_BROAD", "SYNTHESIS"
+                }
+                answer_type = parsed.get("answer_type", "FALLBACK")
+                if answer_type not in VALID_ANSWER_TYPES:
+                    answer = parsed.get("answer", "")
+                    answer_lower = answer.lower()
+                    if re.search(r'PHẦN\s+\d+:', answer) or any(marker in answer_lower for marker in ['phần', 'nội dung chính']):
+                        parsed["answer_type"] = "SECTION_OVERVIEW"
+                    elif any(marker in answer_lower for marker in ["|", "giống", "khác", "so sánh"]):
+                        parsed["answer_type"] = "COMPARE_SYNTHESIZE"
+                    else:
+                        chunks_used = parsed.get("chunks_used", [])
+                        parsed["answer_type"] = "DIRECT" if chunks_used else "FALLBACK"
+                    parsed["confidence"] = max(0.5, parsed.get("confidence", 0.0) * 0.8)
+                return parsed
             except Exception as e:
                 print(f"[RAG] Extracted JSON parse failed: {e}")
                 pass
@@ -923,14 +1161,56 @@ class RAGService:
         answer = answer_match.group(1) if answer_match else text[:1000]
         answer = answer.strip()
         
-        print(f"[RAG] Reconstructed JSON: answer_type={answer_type}, confidence={confidence:.2f}, chunks={len(chunks_found)}")
+        # CRITICAL FIX: Build sentence_mapping from text
+        sentence_mapping = []
+        if answer:
+            # Split into sentences (using Vietnamese sentence delimiters)
+            sentences = re.split(r'[.!?]+', answer)
+            
+            for i, sent in enumerate(sentences):
+                sent = sent.strip()
+                if len(sent) < 10:  # Skip very short fragments
+                    continue
+                
+                # Find which chunk mentions this sentence concept
+                # Look for chunk references near this sentence
+                related_chunk = None
+                
+                # Find the position of this sentence in the full text
+                sent_start = answer.find(sent)
+                if sent_start >= 0:
+                    # Look backwards from sentence start for chunk references
+                    text_before_sent = answer[:sent_start]
+                    chunk_refs_before = re.findall(r'\[Chunk\s+(\d+)\]', text_before_sent, re.IGNORECASE)
+                    if chunk_refs_before:
+                        # Use the most recent chunk reference
+                        related_chunk = int(chunk_refs_before[-1])
+                    else:
+                        # Look in the sentence itself
+                        chunk_refs_in_sent = re.findall(r'\[Chunk\s+(\d+)\]', sent, re.IGNORECASE)
+                        if chunk_refs_in_sent:
+                            related_chunk = int(chunk_refs_in_sent[0])
+                
+                # If no chunk found, check if any chunk number appears in nearby context
+                if not related_chunk and chunks_found:
+                    # Heuristic: if sentence contains keywords that might relate to chunks
+                    # Use first chunk as fallback (better than nothing)
+                    related_chunk = chunks_found[0] if len(chunks_found) == 1 else None
+                
+                sentence_mapping.append({
+                    "sentence": sent[:200],  # Truncate to 200 chars
+                    "chunk": related_chunk,
+                    "external": related_chunk is None
+                })
+        
+        print(f"[RAG] Reconstructed JSON: answer_type={answer_type}, confidence={confidence:.2f}, chunks={len(chunks_found)}, sentences={len(sentence_mapping)}")
         
         return {
             "answer": answer,
             "answer_type": answer_type,
             "chunks_used": chunks_found[:10] if chunks_found else [],
             "confidence": confidence,
-            "sentence_mapping": [],
+            "sentence_mapping": sentence_mapping,  # CRITICAL FIX: Now includes actual mapping
             "sources": {
                 "from_document": bool(chunks_found),
                 "from_external_knowledge": False
@@ -960,7 +1240,7 @@ class RAGService:
 
         question: str,
 
-        document_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,  # ← THAY ĐỔI: List[str] thay vì str
 
         top_k: Optional[int] = None,
 
@@ -970,19 +1250,29 @@ class RAGService:
 
         documents: List[DocumentInDB] = []
 
-        if document_id:
-
-            doc = await get_document_by_id(db, document_id)
-
-            if not doc or doc.user_id != user_id:
-
-                raise ValueError("Document not found or not accessible")
-
-            documents = [doc]
+        if document_ids:  # ← THAY ĐỔI: Kiểm tra list
+            # CHỈ lấy documents được chọn
+            for doc_id in document_ids:
+                doc = await get_document_by_id(db, doc_id)
+                if doc and doc.user_id == user_id:
+                    documents.append(doc)
+                else:
+                    print(f"[RAG] ⚠️ Document {doc_id} not found or not accessible")
             
+            if not documents:
+                raise ValueError("Không tìm thấy tài liệu nào trong danh sách đã chọn")
+            
+            print(f"[RAG] 🎯 Selected {len(documents)} document(s):")
+            for doc in documents:
+                print(f"  ✓ {doc.filename} (ID: {doc.id})")
         else:
-
+            # Không chọn gì = lấy TẤT CẢ
             documents = await get_documents_by_user(db, user_id)
+            print(f"[RAG] 📚 Using ALL documents: {len(documents)} file(s)")
+        
+        # GIÁM SÁT: Log documents IDs để debug
+        document_ids_used = [doc.id for doc in documents]
+        print(f"[RAG] Document IDs being searched: {document_ids_used}")
 
         # Handle các câu chào / small-talk không liên quan đến tài liệu
         normalized_question = question.strip().lower()
@@ -1032,8 +1322,10 @@ class RAGService:
                 )
 
             # Lưu lịch sử nhưng không có references
+            # Use first document_id for backward compatibility
+            doc_id_for_history = document_ids[0] if document_ids and len(document_ids) > 0 else None
             history_record = await create_history(
-                db, user_id, question, answer, [], document_id, conversation_id
+                db, user_id, question, answer, [], doc_id_for_history, conversation_id
             )
 
             final_conversation_id = conversation_id
@@ -1089,8 +1381,12 @@ class RAGService:
         results = []
 
         # ENHANCED: Dynamic max_chunks
-        max_chunks_for_query = self._determine_max_chunks_for_query(question, query_type)
-        print(f"[RAG] Max chunks for this query: {max_chunks_for_query}")
+        max_chunks_for_query = self._determine_max_chunks_for_query(
+            question, 
+            query_type,
+            num_docs=len(documents)  # ✅ THÊM THAM SỐ
+        )
+        print(f"[RAG] Max chunks for this query: {max_chunks_for_query} (for {len(documents)} document(s))")
 
         # Search with larger initial top_k for more candidates
         for doc in documents:
@@ -1109,8 +1405,14 @@ class RAGService:
 
             try:
 
-                # ENHANCED: Tăng search_k cho reasoning queries
-                if query_type in ["MULTI_CONCEPT_REASONING", "COMPARE_SYNTHESIZE", "CODE_ANALYSIS"]:
+                # ENHANCED: Tăng search_k dựa trên query type
+                if query_type == "DOCUMENT_OVERVIEW":
+                    # DOCUMENT_OVERVIEW cần NHIỀU chunks nhất để tìm TẤT CẢ các phần
+                    search_k = min(150, index.ntotal)  # Tăng lên 150 để có đủ candidate chunks
+                elif query_type == "SECTION_OVERVIEW":
+                    # SECTION_OVERVIEW cần chunks vừa phải
+                    search_k = min(100, index.ntotal)
+                elif query_type in ["MULTI_CONCEPT_REASONING", "COMPARE_SYNTHESIZE", "CODE_ANALYSIS"]:
                     search_k = min(50, index.ntotal)  # Increased from 30
                 else:
                     search_k = min(30, index.ntotal)
@@ -1151,12 +1453,16 @@ class RAGService:
             # ENHANCED: Detect query type even for error cases
             query_type = detect_query_type_fast(question)
             
-            # Nếu người dùng đã chọn 1 tài liệu cụ thể mà không tìm được đoạn văn nào
-            # thì trả lời rõ ràng là câu hỏi không nằm trong nội dung tài liệu đó
-            if document_id:
+            # ENHANCED: Thông báo rõ ràng cho user
+            if document_ids:
+                selected_filenames = [doc.filename for doc in documents]
                 answer = (
-                    "Câu hỏi này không nằm trong nội dung của tài liệu bạn đã chọn. "
-                    'Bạn có thể thử lại với chế độ "Tất cả tài liệu" hoặc chọn một tài liệu khác phù hợp hơn.'
+                    f"Không tìm thấy thông tin liên quan trong {len(documents)} tài liệu đã chọn:\n"
+                    f"• {', '.join(selected_filenames)}\n\n"
+                    f"Có thể thử:\n"
+                    f"1. Chọn thêm tài liệu khác\n"
+                    f"2. Đặt câu hỏi theo cách khác\n"
+                    f"3. Kiểm tra nội dung tài liệu có liên quan không"
                 )
             else:
                 answer = "Không tìm thấy đoạn văn phù hợp trong tài liệu của bạn."
@@ -1164,13 +1470,15 @@ class RAGService:
             return {
                 "answer": answer,
                 "references": [],
-                "documents": [doc.id for doc in documents],
+                "documents": document_ids_used,
+                "documents_searched": document_ids_used,  # ← THÊM: list IDs đã search
                 "metadata": {
                     "answer_type": "FALLBACK",
                     "confidence": 0.0,
                     "query_type": query_type,
                     "chunks_selected": 0,
                     "chunks_used": 0,
+                    "documents_searched": len(documents),  # ← THÊM: số docs đã search
                 }
             }
 
@@ -1178,19 +1486,24 @@ class RAGService:
 
         # Boost chunks that contain keywords from the question
 
+        # CRITICAL FIX: Clean keywords - remove quotes, punctuation
         question_lower = question.lower()
-
-        question_keywords = [q.strip() for q in question_lower.replace("?", "").replace("!", "").split() if len(q.strip()) > 2]
-
+        # Remove quotes and normalize
+        question_normalized = re.sub(r'["\']', '', question_lower)
+        question_normalized = re.sub(r'[?!.,;:]', ' ', question_normalized)
         
+        # Extract keywords (longer than 2 chars, exclude stop words)
+        stop_words = {'của', 'và', 'với', 'trong', 'về', 'có', 'là', 'được', 'này', 'cho', 'từ'}
+        question_keywords = [
+            q.strip() 
+            for q in question_normalized.split() 
+            if len(q.strip()) > 2 and q.strip() not in stop_words
+        ]
 
         for item in results:
-
             item["original_similarity"] = item["similarity"]
 
-
-
-        print(f"[RAG] Found {len(results)} candidate chunks, boosting by question keywords: {question_keywords[:5]}")
+        print(f"[RAG] Found {len(results)} candidate chunks, boosting by question keywords (cleaned): {question_keywords[:10]}")
 
 
 
@@ -1273,8 +1586,23 @@ class RAGService:
                         print(f"[RAG] Main section detected: {section} (chunk {record.get('chunk_index')})")
                         break
             
-            # Boost if content contains question keywords
-            keyword_matches = sum(1 for kw in question_keywords if kw in content_lower)
+            # CRITICAL FIX: Also check for quoted terms
+            # If question has 'module' (with quotes), match "module" in content
+            quoted_terms = re.findall(r'["\']([^"\']+)["\']', question_lower)
+            
+            keyword_matches = 0
+            
+            # Match regular keywords
+            for kw in question_keywords:
+                if kw in content_lower:
+                    keyword_matches += 1
+            
+            # Match quoted terms (these are important!)
+            for term in quoted_terms:
+                term_clean = term.lower().strip()
+                if term_clean in content_lower:
+                    keyword_matches += 3  # Triple weight for quoted terms!
+                    print(f"[RAG] Found quoted term '{term_clean}' in chunk {record.get('chunk_index')}")
 
 
 
@@ -1317,12 +1645,13 @@ class RAGService:
             # Apply boosts (combine keyword boost + section boost)
             total_boost = 0.0
             boost_details = []
-            
+
             if keyword_matches > 0:
-                keyword_boost = min(0.3, keyword_matches * 0.08)
-                total_boost += keyword_boost
+                boost = min(0.3, keyword_matches * 0.08)
+                total_boost += boost
                 item["keyword_matches"] = keyword_matches
                 boost_details.append(f"keywords({keyword_matches})")
+                print(f"[RAG] Boosted chunk {record.get('chunk_index')} by {boost:.3f} (keywords: {keyword_matches})")
             
             # CRITICAL FIX: Add section boost for main sections
             if is_main_section:
@@ -1364,46 +1693,82 @@ class RAGService:
         regular_chunks = []
 
         # For reasoning queries, also prioritize chunks with related concepts
+        concept_keywords = []  # Initialize empty list
         if query_type in ["MULTI_CONCEPT_REASONING", "CODE_ANALYSIS", "COMPARE_SYNTHESIZE"]:
             concept_keywords = [
                 "hoisting", "scope", "closure", "function", "arrow", "class",
                 "object", "array", "loop", "for", "while", "if", "variable",
                 "const", "let", "var", "promise", "async", "callback"
             ]
-            
+
+        # For reasoning queries, also prioritize chunks with related concepts
+        if query_type in ["MULTI_CONCEPT_REASONING", "CODE_ANALYSIS", "COMPARE_SYNTHESIZE"]:
             for item in sorted_results:
                 content_lower = (item.get("_content", "") or "").lower()
                 has_concept = any(kw in content_lower for kw in concept_keywords)
-                
-                # Check section match
+
+                # CRITICAL FIX: Improved section matching - bắt MỌI mention của PHẦN X
                 has_section_match = False
-                if any(kw in ["phần", "chương", "part"] for kw in question_keywords):
-                    question_numbers = re.findall(r'\d+', question_lower)
-                    for num in question_numbers:
-                        if (f"phần {num}" in content_lower or 
-                            f"chương {num}" in content_lower):
-                            has_section_match = True
-                            break
+                # Extract all numbers from question (không cần check keywords trước)
+                question_numbers = re.findall(r'\d+', question_lower)
                 
+                # Check if question mentions "phần", "chương", "part" hoặc có số
+                has_section_keyword = any(kw in ["phần", "chương", "part"] for kw in question_keywords)
+                
+                # Match với nhiều pattern khác nhau trong content
+                for num in question_numbers:
+                    # Pattern 1: "PHẦN X", "phần X", "PHẦN X:", "phần X:"
+                    section_patterns = [
+                        rf'phần\s+{num}\b',  # "phần 4" hoặc "PHẦN 4"
+                        rf'phần\s+{num}[:：]',  # "PHẦN 4:" hoặc "phần 4:"
+                        rf'chương\s+{num}\b',  # "chương 4"
+                        rf'part\s+{num}\b',  # "part 4"
+                    ]
+                    
+                    for pattern in section_patterns:
+                        if re.search(pattern, content_lower, re.IGNORECASE):
+                            has_section_match = True
+                            print(f"[RAG] Section match found: pattern '{pattern}' in chunk {item.get('chunk_index', '?')}")
+                            break
+                    
+                    if has_section_match:
+                        break
+                
+                # CRITICAL: Nếu có section match, luôn ưu tiên (không cần check similarity)
                 if has_section_match or (has_concept and item["similarity"] > 0.4):
                     priority_chunks.append(item)
                 else:
                     regular_chunks.append(item)
         else:
-            # Original logic for other query types
+            # CRITICAL FIX: Improved section matching for other query types
             for item in sorted_results:
                 content_lower = (item.get("_content", "") or "").lower()
                 has_section_match = False
                 
-                if any(kw in ["phần", "chương", "part"] for kw in question_keywords):
-                    question_numbers = re.findall(r'\d+', question_lower)
-                    for num in question_numbers:
-                        if (f"phần {num}" in content_lower or 
-                            f"chương {num}" in content_lower or
-                            re.search(rf"{num}\.\d+", content_lower)):
-                            has_section_match = True
-                            break
+                # Extract all numbers from question (không cần check keywords trước)
+                question_numbers = re.findall(r'\d+', question_lower)
                 
+                # Match với nhiều pattern khác nhau trong content
+                for num in question_numbers:
+                    # Pattern 1: "PHẦN X", "phần X", "PHẦN X:", "phần X:"
+                    section_patterns = [
+                        rf'phần\s+{num}\b',  # "phần 4" hoặc "PHẦN 4"
+                        rf'phần\s+{num}[:：]',  # "PHẦN 4:" hoặc "phần 4:"
+                        rf'chương\s+{num}\b',  # "chương 4"
+                        rf'part\s+{num}\b',  # "part 4"
+                        rf'{num}\.\d+',  # "4.1", "4.2" (subsection)
+                    ]
+                    
+                    for pattern in section_patterns:
+                        if re.search(pattern, content_lower, re.IGNORECASE):
+                            has_section_match = True
+                            print(f"[RAG] Section match found: pattern '{pattern}' in chunk {item.get('chunk_index', '?')}")
+                            break
+                    
+                    if has_section_match:
+                        break
+
+                # CRITICAL: Nếu có section match, luôn ưu tiên (không cần check similarity)
                 if has_section_match:
                     priority_chunks.append(item)
                 else:
@@ -1421,6 +1786,118 @@ class RAGService:
 
         # ENHANCED: Use dynamic max_chunks based on query type
         max_selected_chunks = max_chunks_for_query
+        
+        # CRITICAL FIX: Cho DOCUMENT_OVERVIEW, ưu tiên số chunks hơn context length
+        # Vì cần scan TẤT CẢ chunks để tìm TẤT CẢ các phần
+        is_document_overview = query_type == "DOCUMENT_OVERVIEW"
+        if is_document_overview:
+            # CRITICAL FIX: Tăng context length limit drastically cho DOCUMENT_OVERVIEW
+            # 1 file: 50000, 2 files: 55000, 3+ files: 60000
+            num_docs = len(documents)
+            if num_docs >= 3:
+                context_limit = 60000  # Tăng từ 40k → 60k
+            elif num_docs >= 2:
+                context_limit = 55000  # Tăng từ 35k → 55k
+            else:
+                context_limit = 50000  # Tăng từ 22k → 50k
+            print(f"[RAG] DOCUMENT_OVERVIEW: Using extended context limit: {context_limit} chars, max_chunks: {max_selected_chunks} (for {num_docs} document(s))")
+        else:
+            context_limit = self.max_context_length
+
+        # CRITICAL FIX: For multi-doc DOCUMENT_OVERVIEW, ensure chunks from ALL documents
+        # Instead of just top chunks by similarity, select top chunks from EACH document
+        if is_document_overview and len(documents) > 1:
+            # Group chunks by document_id
+            chunks_by_doc = {}
+            for item in all_chunks_ordered:
+                doc_id = item["document"].id
+                if doc_id not in chunks_by_doc:
+                    chunks_by_doc[doc_id] = []
+                chunks_by_doc[doc_id].append(item)
+            
+            # Select top chunks from EACH document
+            # For 2 files: ~40 chunks per file, for 3+ files: ~30 chunks per file
+            # Tăng chunks_per_doc để đảm bảo có đủ chunks từ mỗi document
+            chunks_per_doc = max(40, int(max_selected_chunks * 0.6))  # 60% của max_selected_chunks cho mỗi doc
+            print(f"[RAG] DOCUMENT_OVERVIEW multi-doc: Selecting top {chunks_per_doc} chunks from each of {len(documents)} document(s)")
+            
+            balanced_chunks = []
+            for doc_id, doc_chunks in chunks_by_doc.items():
+                # Take top chunks from this document (already sorted by similarity)
+                # Đảm bảo chọn đủ chunks từ mỗi document
+                top_chunks = doc_chunks[:min(chunks_per_doc, len(doc_chunks))]
+                balanced_chunks.extend(top_chunks)
+                print(f"[RAG] Selected {len(top_chunks)} chunks from document {doc_id} (total available: {len(doc_chunks)})")
+            
+            # Re-sort by similarity to maintain quality
+            balanced_chunks = sorted(balanced_chunks, key=lambda r: r["similarity"], reverse=True)
+            all_chunks_ordered = balanced_chunks
+            print(f"[RAG] DOCUMENT_OVERVIEW: Balanced selection - {len(all_chunks_ordered)} chunks from {len(documents)} document(s)")
+
+        # CRITICAL FIX: Pre-filtering để đảm bảo section coverage cho DOCUMENT_OVERVIEW
+        # Đảm bảo mỗi section có ít nhất 1 chunk representative
+        if is_document_overview:
+            print(f"[RAG] DOCUMENT_OVERVIEW: Pre-filtering to ensure section coverage...")
+            
+            # Nhóm chunks theo section
+            chunks_by_section = {}
+            for idx, item in enumerate(all_chunks_ordered):
+                content = item.get("_content", "")
+                if not content:
+                    continue
+                
+                # Extract PHẦN X từ content (nhiều patterns)
+                section_patterns = [
+                    r'PHẦN\s+(\d+)',  # "PHẦN 4"
+                    r'phần\s+(\d+)',  # "phần 4"
+                    r'chương\s+(\d+)',  # "chương 4"
+                    r'part\s+(\d+)',  # "part 4"
+                ]
+                
+                section_num = None
+                for pattern in section_patterns:
+                    match = re.search(pattern, content, re.IGNORECASE)
+                    if match:
+                        section_num = int(match.group(1))
+                        break
+                
+                if section_num:
+                    if section_num not in chunks_by_section:
+                        chunks_by_section[section_num] = []
+                    chunks_by_section[section_num].append((idx, item))
+            
+            # Lấy 1 chunk representative từ mỗi section (chunk có similarity cao nhất)
+            section_representatives = []
+            for section_num in sorted(chunks_by_section.keys()):
+                chunk_list = chunks_by_section[section_num]
+                # Sort by similarity (descending) và lấy chunk đầu tiên
+                chunk_list.sort(key=lambda x: x[1].get("similarity", 0), reverse=True)
+                best_idx, best_item = chunk_list[0]
+                section_representatives.append(best_item)
+                
+                chunk_index = best_item.get("_record", {}).get("chunk_index", "?")
+                print(f"[RAG] Section PHẦN {section_num}: selected chunk {chunk_index} (similarity: {best_item.get('similarity', 0):.3f})")
+            
+            # Thêm representatives vào selected_results trước
+            for rep_item in section_representatives:
+                rep_content = rep_item.get("_content", "")
+                rep_length = len(rep_content) if rep_content else 0
+                selected_results.append(rep_item)
+                current_context_length += rep_length
+            
+            print(f"[RAG] DOCUMENT_OVERVIEW: Pre-selected {len(section_representatives)} section representatives from {len(chunks_by_section)} sections")
+            print(f"[RAG] Pre-selection context length: {current_context_length}/{context_limit} chars")
+            
+            # Loại bỏ các chunks đã được chọn từ all_chunks_ordered để tránh duplicate
+            selected_chunk_indices = {
+                rep_item.get("_record", {}).get("chunk_index")
+                for rep_item in section_representatives
+            }
+            all_chunks_ordered = [
+                item for item in all_chunks_ordered
+                if item.get("_record", {}).get("chunk_index") not in selected_chunk_indices
+            ]
+            print(f"[RAG] Remaining chunks after pre-selection: {len(all_chunks_ordered)}")
 
         for item in all_chunks_ordered:
 
@@ -1429,9 +1906,30 @@ class RAGService:
             content_length = len(content) if content else 0
 
             # CRITICAL FIX: Check cả context length VÀ số chunks
-            if (current_context_length + content_length + 500 > self.max_context_length) or \
-               (len(selected_results) >= max_selected_chunks):
-                break
+            # Cho DOCUMENT_OVERVIEW: ưu tiên số chunks, chỉ dừng khi quá giới hạn nghiêm trọng
+            if is_document_overview:
+                # Cho DOCUMENT_OVERVIEW: ưu tiên số chunks
+                # Với multi-doc: cho phép vượt quá context limit nhiều hơn để đảm bảo có chunks từ TẤT CẢ documents
+                if len(documents) > 1:
+                    # Multi-doc: cho phép vượt quá 20% để đảm bảo có đủ chunks từ cả 2 files
+                    # Vì cần scan TẤT CẢ chunks để tìm TẤT CẢ các phần từ TẤT CẢ documents
+                    context_threshold = context_limit * 1.20  # 120% của limit
+                else:
+                    # Single doc: cho phép vượt quá 5%
+                    context_threshold = context_limit * 1.05  # 105% của limit
+                
+                # Chỉ dừng nếu:
+                # 1. Đã đủ chunks (max_selected_chunks), HOẶC
+                # 2. Context length vượt quá threshold
+                #    Vì DOCUMENT_OVERVIEW cần scan TẤT CẢ chunks để tìm TẤT CẢ các phần
+                if (len(selected_results) >= max_selected_chunks) or \
+                   (current_context_length + content_length + 500 > context_threshold):
+                    break
+            else:
+                # Cho các query types khác: giữ logic cũ
+                if (current_context_length + content_length + 500 > context_limit) or \
+                   (len(selected_results) >= max_selected_chunks):
+                    break
 
 
 
@@ -1509,7 +2007,7 @@ class RAGService:
 
 
 
-        print(f"[RAG] Selected {len(selected_results)} chunks (context length: {current_context_length}/{self.max_context_length} chars)")
+        print(f"[RAG] Selected {len(selected_results)} chunks (context length: {current_context_length}/{context_limit} chars, max_chunks: {max_selected_chunks})")
 
         print(f"[RAG] Priority chunks: {len(priority_chunks)}, Regular chunks: {len(regular_chunks)}")
 
@@ -1530,7 +2028,8 @@ class RAGService:
             await self._generate_answer_with_tracking(
                 question, 
                 chunk_metadata_for_context,
-                query_type  # Pass query type to generation
+                query_type,  # Pass query type to generation
+                selected_documents=documents,
             )
 
         print(f"[RAG] LLM used {len(chunks_actually_used)} chunks in answer")
@@ -1772,218 +2271,218 @@ class RAGService:
                     target_chunk_index = chunk_info
                     target_document_id = None
 
-            
-
-            # Find the corresponding item in selected_results
-
-            for item in selected_results:
-
-                record = item.get("_record")
-
-                doc = item["document"]
-
                 
 
-                if not record:
+                # Find the corresponding item in selected_results
 
-                    continue
+                for item in selected_results:
 
-                
+                    record = item.get("_record")
 
-                # QUAN TRỌNG: Check cả chunk_index VÀ document_id để tránh nhầm lẫn
+                    doc = item["document"]
 
-                chunk_index_match = record.get("chunk_index") == target_chunk_index
+                    
 
-                
-
-                # Nếu có document_id trong chunk_info, phải match cả document_id
-
-                if target_document_id:
-
-                    document_id_match = record.get("document_id") == target_document_id
-
-                    if not (chunk_index_match and document_id_match):
+                    if not record:
 
                         continue
 
-                else:
-
-                    # Nếu không có document_id, chỉ cần match chunk_index
-
-                    if not chunk_index_match:
-
-                        continue
-
-                
-
-                chunk_doc = item.get("_chunk_doc")
-
-                content = item.get("_content")
-
-                record = item.get("_record")
-
-                
-
-                # Lấy metadata - ưu tiên từ metadata_map (đã có sẵn từ chunk_metadata_for_context)
-                # Đây là nguồn đáng tin cậy nhất vì đã được lấy trực tiếp từ database khi build context
-                metadata_key = (target_chunk_index, target_document_id or record.get("document_id") if record else None)
-                cached_metadata = metadata_map.get(metadata_key)
-                
-                if cached_metadata:
-                    # Sử dụng metadata từ cache (đã có section, heading, page_number)
-                    # Metadata map đã được fill với sections từ previous chunks trong second pass
-                    page_number = cached_metadata.get("page_number")
-                    section = cached_metadata.get("section")
-                    heading = cached_metadata.get("heading")
-                    display_section = section or heading
                     
-                    # If the section is not a numbered section, we might find a better one from database
-                    # So we'll still try to find a numbered section later if display_section is not numbered
-                else:
-                    # Fallback: lấy từ database nếu không có trong cache
-                    chunk_metadata = {}
+
+                    # QUAN TRỌNG: Check cả chunk_index VÀ document_id để tránh nhầm lẫn
+
+                    chunk_index_match = record.get("chunk_index") == target_chunk_index
+
                     
-                    # Ưu tiên metadata từ chunk_doc (chunks collection)
-                    if chunk_doc:
-                        chunk_metadata = (chunk_doc.get("metadata") or {})
+
+                    # Nếu có document_id trong chunk_info, phải match cả document_id
+
+                    if target_document_id:
+
+                        document_id_match = record.get("document_id") == target_document_id
+
+                        if not (chunk_index_match and document_id_match):
+
+                            continue
+
+                    else:
+
+                        # Nếu không có document_id, chỉ cần match chunk_index
+
+                        if not chunk_index_match:
+
+                            continue
+
                     
-                    # Nếu không có, thử từ record (embeddings collection)
-                    if not chunk_metadata and record:
-                        chunk_metadata = (record.get("metadata") or {})
+
+                    chunk_doc = item.get("_chunk_doc")
+
+                    content = item.get("_content")
+
+                    record = item.get("_record")
                     
-                    # Đảm bảo chunk_metadata là dict
-                    if not isinstance(chunk_metadata, dict):
+                    
+
+                    # Lấy metadata - ưu tiên từ metadata_map (đã có sẵn từ chunk_metadata_for_context)
+                    # Đây là nguồn đáng tin cậy nhất vì đã được lấy trực tiếp từ database khi build context
+                    metadata_key = (target_chunk_index, target_document_id or record.get("document_id") if record else None)
+                    cached_metadata = metadata_map.get(metadata_key)
+                    
+                    if cached_metadata:
+                        # Sử dụng metadata từ cache (đã có section, heading, page_number)
+                        # Metadata map đã được fill với sections từ previous chunks trong second pass
+                        page_number = cached_metadata.get("page_number")
+                        section = cached_metadata.get("section")
+                        heading = cached_metadata.get("heading")
+                        display_section = section or heading
+                        
+                        # If the section is not a numbered section, we might find a better one from database
+                        # So we'll still try to find a numbered section later if display_section is not numbered
+                    else:
+                        # Fallback: lấy từ database nếu không có trong cache
                         chunk_metadata = {}
+                        
+                        # Ưu tiên metadata từ chunk_doc (chunks collection)
+                        if chunk_doc:
+                            chunk_metadata = (chunk_doc.get("metadata") or {})
+                        
+                        # Nếu không có, thử từ record (embeddings collection)
+                        if not chunk_metadata and record:
+                            chunk_metadata = (record.get("metadata") or {})
+                        
+                        # Đảm bảo chunk_metadata là dict
+                        if not isinstance(chunk_metadata, dict):
+                            chunk_metadata = {}
+                        
+                        page_number = chunk_metadata.get("page_number")
+                        section = chunk_metadata.get("section")
+                        heading = chunk_metadata.get("heading") or chunk_metadata.get("title") or chunk_metadata.get("section_title")
+                        display_section = section or heading
+                        
+                        # Debug: log nếu không tìm thấy trong cache
+                        if target_chunk_index in [1, 3, 8, 10, 11, 42, 31, 48, 66]:
+                            print(f"[RAG] Warning: chunk {target_chunk_index} not found in metadata_map, using database. metadata={chunk_metadata}")
                     
-                    page_number = chunk_metadata.get("page_number")
-                    section = chunk_metadata.get("section")
-                    heading = chunk_metadata.get("heading") or chunk_metadata.get("title") or chunk_metadata.get("section_title")
-                    display_section = section or heading
+                    # If still no section, try to extract from content (shouldn't happen often after second pass)
+                    if not display_section and content and doc.file_type:
+                        extracted_section = self._extract_section_from_content(content, doc.file_type)
+                        if extracted_section:
+                            display_section = extracted_section
+                            print(f"[RAG] Extracted section from content for chunk {target_chunk_index}: {display_section}")
                     
-                    # Debug: log nếu không tìm thấy trong cache
-                    if target_chunk_index in [1, 3, 8, 10, 11, 42, 31, 48, 66]:
-                        print(f"[RAG] Warning: chunk {target_chunk_index} not found in metadata_map, using database. metadata={chunk_metadata}")
-                
-                # If still no section, try to extract from content (shouldn't happen often after second pass)
-                if not display_section and content and doc.file_type:
-                    extracted_section = self._extract_section_from_content(content, doc.file_type)
-                    if extracted_section:
-                        display_section = extracted_section
-                        print(f"[RAG] Extracted section from content for chunk {target_chunk_index}: {display_section}")
-                
-                # If still no section, or if section is not numbered (might have better numbered section),
-                # try to find from previous chunks in database
-                # This handles cases where the chunk wasn't in chunk_metadata_for_context
-                # or where we want to find a better numbered section
-                has_section = bool(display_section)
-                is_numbered = self._is_numbered_section(display_section) if display_section else False
-                
-                # Query database if: no section, or has section but not numbered (might find better numbered section)
-                if target_chunk_index is not None and target_chunk_index > 0 and (not has_section or not is_numbered):
-                    doc_id_for_lookup = target_document_id or record.get("document_id") if record else None
-                    if doc_id_for_lookup:
-                        try:
-                            # Query database for previous chunks in the same document
-                            # Look for chunks with chunk_index < target_chunk_index, ordered by chunk_index desc
-                            # Limit to 10 chunks to avoid too many queries
-                            previous_chunks = await db["chunks"].find({
-                                "document_id": doc_id_for_lookup,
-                                "chunk_index": {"$lt": target_chunk_index}
-                            }).sort("chunk_index", -1).limit(10).to_list(length=10)
-                            
-                            # Collect candidate sections from previous chunks
-                            candidate_sections = []
-                            for prev_chunk in previous_chunks:
-                                prev_metadata = prev_chunk.get("metadata") or {}
-                                prev_section = prev_metadata.get("section")
-                                prev_heading = prev_metadata.get("heading")
+                    # If still no section, or if section is not numbered (might have better numbered section),
+                    # try to find from previous chunks in database
+                    # This handles cases where the chunk wasn't in chunk_metadata_for_context
+                    # or where we want to find a better numbered section
+                    has_section = bool(display_section)
+                    is_numbered = self._is_numbered_section(display_section) if display_section else False
+                    
+                    # Query database if: no section, or has section but not numbered (might find better numbered section)
+                    if target_chunk_index is not None and target_chunk_index > 0 and (not has_section or not is_numbered):
+                        doc_id_for_lookup = target_document_id or record.get("document_id") if record else None
+                        if doc_id_for_lookup:
+                            try:
+                                # Query database for previous chunks in the same document
+                                # Look for chunks with chunk_index < target_chunk_index, ordered by chunk_index desc
+                                # Limit to 10 chunks to avoid too many queries
+                                previous_chunks = await db["chunks"].find({
+                                    "document_id": doc_id_for_lookup,
+                                    "chunk_index": {"$lt": target_chunk_index}
+                                }).sort("chunk_index", -1).limit(10).to_list(length=10)
                                 
-                                # Also try to extract from content if it looks like a heading
-                                prev_content = prev_chunk.get("content", "")
-                                if not prev_section and not prev_heading and prev_content:
-                                    extracted = self._extract_section_from_content(prev_content, doc.file_type if doc else "docx")
-                                    if extracted:
-                                        prev_section = extracted
+                                # Collect candidate sections from previous chunks
+                                candidate_sections = []
+                                for prev_chunk in previous_chunks:
+                                    prev_metadata = prev_chunk.get("metadata") or {}
+                                    prev_section = prev_metadata.get("section")
+                                    prev_heading = prev_metadata.get("heading")
+                                    
+                                    # Also try to extract from content if it looks like a heading
+                                    prev_content = prev_chunk.get("content", "")
+                                    if not prev_section and not prev_heading and prev_content:
+                                        extracted = self._extract_section_from_content(prev_content, doc.file_type if doc else "docx")
+                                        if extracted:
+                                            prev_section = extracted
+                                    
+                                    if prev_heading:
+                                        candidate_sections.append({
+                                            "text": prev_heading,
+                                            "is_heading": True,
+                                            "is_numbered": self._is_numbered_section(prev_heading),
+                                            "length": len(prev_heading),
+                                            "chunk_idx": prev_chunk.get("chunk_index")
+                                        })
+                                    if prev_section and prev_section != prev_heading:
+                                        candidate_sections.append({
+                                            "text": prev_section,
+                                            "is_heading": False,
+                                            "is_numbered": self._is_numbered_section(prev_section),
+                                            "length": len(prev_section),
+                                            "chunk_idx": prev_chunk.get("chunk_index")
+                                        })
                                 
-                                if prev_heading:
-                                    candidate_sections.append({
-                                    "text": prev_heading,
-                                    "is_heading": True,
-                                    "is_numbered": self._is_numbered_section(prev_heading),
-                                    "length": len(prev_heading),
-                                    "chunk_idx": prev_chunk.get("chunk_index")
-                                })
-                                if prev_section and prev_section != prev_heading:
-                                    candidate_sections.append({
-                                        "text": prev_section,
-                                        "is_heading": False,
-                                        "is_numbered": self._is_numbered_section(prev_section),
-                                        "length": len(prev_section),
-                                        "chunk_idx": prev_chunk.get("chunk_index")
-                                    })
-                            
-                            # Choose the best section: prefer numbered sections
-                            if candidate_sections:
-                                def section_priority(candidate):
-                                    priority = 0
-                                    if candidate["is_numbered"]:
-                                        priority += 1000  # Highest priority
-                                    if candidate["is_heading"]:
-                                        priority += 100
-                                    if candidate["length"] < 60:
-                                        priority += 50
-                                    # Prefer sections from chunks closer to current chunk
-                                    priority += (100 - candidate["chunk_idx"] or 0) / 100
-                                    return priority
-                                
-                                candidate_sections.sort(key=section_priority, reverse=True)
-                                best_candidate = candidate_sections[0]
-                                
-                                # Only use database section if:
-                                # 1. We had no section, OR
-                                # 2. Database has a numbered section (better than non-numbered)
-                                if not has_section or (best_candidate["is_numbered"] and not is_numbered):
-                                    display_section = best_candidate["text"]
-                                    print(f"[RAG] Found section from database for chunk {target_chunk_index}: {display_section} (from chunk {best_candidate['chunk_idx']})")
-                        except Exception as e:
-                            print(f"[RAG] Error querying database for previous chunks: {e}")
-                
-                if not display_section:
-                    print(f"[RAG] No section found for chunk {target_chunk_index} after all attempts")
+                                # Choose the best section: prefer numbered sections
+                                if candidate_sections:
+                                    def section_priority(candidate):
+                                        priority = 0
+                                        if candidate["is_numbered"]:
+                                            priority += 1000  # Highest priority
+                                        if candidate["is_heading"]:
+                                            priority += 100
+                                        if candidate["length"] < 60:
+                                            priority += 50
+                                        # Prefer sections from chunks closer to current chunk
+                                        priority += (100 - candidate["chunk_idx"] or 0) / 100
+                                        return priority
+                                    
+                                    candidate_sections.sort(key=section_priority, reverse=True)
+                                    best_candidate = candidate_sections[0]
+                                    
+                                    # Only use database section if:
+                                    # 1. We had no section, OR
+                                    # 2. Database has a numbered section (better than non-numbered)
+                                    if not has_section or (best_candidate["is_numbered"] and not is_numbered):
+                                        display_section = best_candidate["text"]
+                                        print(f"[RAG] Found section from database for chunk {target_chunk_index}: {display_section} (from chunk {best_candidate['chunk_idx']})")
+                            except Exception as e:
+                                print(f"[RAG] Error querying database for previous chunks: {e}")
+                    
+                    if not display_section:
+                        print(f"[RAG] No section found for chunk {target_chunk_index} after all attempts")
 
-                
+                    
 
-                preview = content[:160] if content else None
+                    preview = content[:160] if content else None
 
-                
+                    
 
-                final_references.append(
+                    final_references.append(
 
-                    HistoryReference(
+                        HistoryReference(
 
-                        document_id=doc.id,
+                            document_id=doc.id,
 
-                        document_filename=doc.filename,
+                            document_filename=doc.filename,
 
-                        document_file_type=doc.file_type,
+                            document_file_type=doc.file_type,
 
-                        chunk_id=str(chunk_doc.get("_id")) if chunk_doc else None,
+                            chunk_id=str(chunk_doc.get("_id")) if chunk_doc else None,
 
-                        chunk_index=target_chunk_index,
+                            chunk_index=target_chunk_index,
 
-                        page_number=page_number,
+                            page_number=page_number,
 
-                        section=display_section,  # Sử dụng section hoặc heading
+                            section=display_section,  # Sử dụng section hoặc heading
 
-                        score=item["similarity"],
+                            score=item["similarity"],
 
-                        content_preview=preview,
+                            content_preview=preview,
+
+                        )
 
                     )
 
-                )
-
-                break
+                    break
 
 
 
@@ -2055,20 +2554,20 @@ class RAGService:
 
 
 
-        # Filter references based on document_id
+        # CRITICAL: Filter references theo documents được chọn
         filtered_refs = deduplicated_refs
         
-        if document_id:
-            # Only keep references from the specified document
-            filtered_refs = [ref for ref in deduplicated_refs if ref.document_id == document_id]
-            print(f"[RAG] Filtered references to document {document_id}: {len(filtered_refs)} references")
+        if document_ids:  # ← THAY ĐỔI: Check list
+            # CHỈ giữ references từ documents được chọn
+            filtered_refs = [
+                ref for ref in deduplicated_refs 
+                if ref.document_id in document_ids  # ← THAY ĐỔI: check in list
+            ]
+            print(f"[RAG] 🎯 Filtered to {len(document_ids)} selected document(s): {len(filtered_refs)} references")
         else:
-            # Ở chế độ "Tất cả tài liệu" thì giữ mọi tài liệu mà LLM đã sử dụng,
-            # không lọc bớt theo chunks_by_document để có thể trích dẫn từ nhiều file khác nhau.
+            # "Tất cả tài liệu" mode - giữ mọi reference
             if len(chunks_by_document) > 1:
-                print(f"[RAG] Multiple documents used in answer, keeping references from all {len(chunks_by_document)} documents")
-            elif len(chunks_by_document) == 1:
-                print(f"[RAG] Single document used in answer, keeping all references")
+                print(f"[RAG] 📚 Multiple documents used, keeping all {len(filtered_refs)} references")
         
         # Smart filtering: If there are multiple sections, prioritize the section(s) với nhiều chunk nhất.
         # Chỉ áp dụng khi tất cả references đều thuộc 1 tài liệu; nếu nhiều tài liệu thì giữ nguyên.
@@ -2171,14 +2670,18 @@ class RAGService:
 
 
         # === ENHANCED LOGGING ===
+        documents_used = list({ref.document_id for ref in final_references if getattr(ref, "document_id", None)})
+
         log_entry = {
             "timestamp": datetime.utcnow().isoformat(),
             "question": question[:100],
-            "document_id": document_id,
+            "document_ids": document_ids,  # ← THAY ĐỔI
+            "documents_searched": document_ids_used,
             "query_type": detect_query_type_fast(question),
             "answer_type": answer_type,
             "confidence": confidence,
             "chunks_retrieved": len(results) if 'results' in locals() else 0,
+            "documents_used": documents_used,
             "chunks_selected": len(selected_results) if 'selected_results' in locals() else 0,
             "chunks_used": [c.get("chunk_index") for c in chunks_actually_used],
             "references_count": len(final_references),
@@ -2200,11 +2703,13 @@ class RAGService:
         print(f"[RAG] Question: {question[:100]}...")
         print(f"[RAG] Answer: {answer[:100]}...")
         print(f"[RAG] Conversation ID: {final_conversation_id}")
-        print(f"[RAG] Document ID: {document_id}")
+        print(f"[RAG] Document IDs: {document_ids_used}")
         print(f"[RAG] References count: {len(final_references)}")
         
+        # Use first document_id for backward compatibility with history model
+        doc_id_for_history = document_ids[0] if document_ids and len(document_ids) > 0 else None
         history_record = await create_history(
-            db, user_id, question, answer, final_references, document_id, final_conversation_id
+            db, user_id, question, answer, final_references, doc_id_for_history, final_conversation_id
         )
         
         print(f"[RAG] ✅ History record created - ID: {history_record.id}")
@@ -2250,14 +2755,17 @@ class RAGService:
             "answer": answer,
             "references": final_references,
             "documents": list(set([ref.document_id for ref in final_references if ref.document_id])),
+            "documents_searched": document_ids_used,  # ← THÊM: list IDs đã search
             "conversation_id": final_conversation_id,
             "history_id": history_record.id,
             "metadata": {
                 "answer_type": answer_type,
                 "confidence": confidence,
-                "query_type": query_type,
+                "query_type": query_type,  # ← VẪN CÓ 4 TẦNG
                 "chunks_selected": len(selected_results),
                 "chunks_used": len(chunks_actually_used),
+                "documents_count": len(documents),  # ← THÊM: số docs đã search
+                "documents_selected": len(document_ids) if document_ids else len(documents),  # ← THÊM
             }
         }
 
@@ -2267,7 +2775,8 @@ class RAGService:
         self, 
         question: str, 
         chunk_metadata_list: List[dict],
-        query_type: str = "DIRECT"
+        query_type: str = "DIRECT",
+        selected_documents: Optional[List[DocumentInDB]] = None,
     ) -> tuple[str, List[dict], str, float, List[dict]]:
         """
         Generate answer and track which chunks were actually used.
@@ -2276,6 +2785,18 @@ class RAGService:
         # Build context với similarity scores
         context_parts = []
         chunk_similarities = []
+        selected_docs_info: Optional[List[Dict[str, str]]] = None
+        if selected_documents:
+            selected_docs_info = []
+            for doc in selected_documents:
+                if not doc:
+                    continue
+                filename = getattr(doc, "filename", None) or getattr(doc, "title", None) or "Unnamed document"
+                doc_id = getattr(doc, "id", None)
+                selected_docs_info.append({
+                    "id": doc_id,
+                    "filename": filename,
+                })
 
         for chunk_meta in chunk_metadata_list:
             idx = chunk_meta["chunk_index"]
@@ -2303,7 +2824,8 @@ class RAGService:
             question=question,
             context_text=context_text,
             chunk_similarities=chunk_similarities,
-            query_type=query_type
+            query_type=query_type,
+            selected_documents=selected_docs_info,
         )
         
         # Call Gemini API
@@ -2454,29 +2976,144 @@ class RAGService:
                     # Original validation for non-reasoning queries
                     # CRITICAL FIX: Don't apply fallback detection for SECTION_OVERVIEW or DOCUMENT_OVERVIEW
                     if answer_type not in ["SECTION_OVERVIEW", "DOCUMENT_OVERVIEW"]:
+                        # CRITICAL FIX: Check answer quality BEFORE forcing FALLBACK
+                        # Extract chunks from answer text if chunks_used is empty
+                        answer_has_chunk_refs = bool(re.search(r'chunk\s+(\d+)', answer, re.IGNORECASE))
+                        answer_length = len(answer)
+                        answer_has_citations = bool(re.search(r'(chunk|theo|trong|tài liệu)', answer, re.IGNORECASE))
+                        
                         # Rule 1: Fallback detection via keywords
+                        # BUT: Don't force FALLBACK if answer has good quality
                         if self._is_fallback_answer(answer):
-                            answer_type = "FALLBACK"
-                            chunk_indices = []
-                            confidence = 0.0
-                            sentence_mapping = []
-                            print(f"[RAG] Fallback detected via keywords")
+                            # Check if answer is actually good despite keywords
+                            if answer_length > 500 and (answer_has_chunk_refs or answer_has_citations):
+                                # Answer has substance and citations → NOT a fallback
+                                print(f"[RAG] ⚠️ Fallback keywords detected BUT answer quality good ({answer_length} chars, has citations) → KEEP")
+                                # CRITICAL FIX: Always extract chunks from answer text if answer is good
+                                # Even if chunks were zeroed out earlier, we should restore them
+                                if answer_has_chunk_refs:
+                                    chunk_refs = re.findall(r'chunk\s+(\d+)', answer, re.IGNORECASE)
+                                    extracted_chunks = [int(ref) for ref in chunk_refs[:15]]  # Extract up to 15 chunks
+                                    # Merge with existing chunks, remove duplicates
+                                    if chunk_indices:
+                                        all_chunks = list(set(chunk_indices + extracted_chunks))
+                                        print(f"[RAG] Extracted {len(extracted_chunks)} chunks from answer text, merged with existing {len(chunk_indices)} → total: {len(all_chunks)}")
+                                    else:
+                                        all_chunks = extracted_chunks
+                                        print(f"[RAG] Extracted {len(extracted_chunks)} chunks from answer text (was empty)")
+                                    chunk_indices = all_chunks[:20]  # Limit to 20 chunks max
+                                # Auto-correct type if needed
+                                if answer_type == "FALLBACK":
+                                    if query_type in ["MULTI_CONCEPT_REASONING", "CODE_ANALYSIS", "EXERCISE_GENERATION"]:
+                                        answer_type = query_type
+                                    elif answer_has_chunk_refs or len(chunk_indices) > 0:
+                                        answer_type = "DIRECT"
+                                    else:
+                                        answer_type = "SYNTHESIS"
+                                # CRITICAL FIX: Set confidence based on answer length (more granular)
+                                if confidence < 0.5:
+                                    if answer_length > 1000:
+                                        confidence = 0.85  # Long answer → high confidence
+                                    elif answer_length > 700:
+                                        confidence = 0.80  # Medium-long answer
+                                    else:
+                                        confidence = 0.75  # Short but good answer
+                                print(f"[RAG] Auto-corrected: type={answer_type}, confidence={confidence:.2f}, chunks={len(chunk_indices)}")
+                            else:
+                                # Real fallback - short answer with fallback keywords
+                                answer_type = "FALLBACK"
+                                chunk_indices = []
+                                confidence = 0.0
+                                sentence_mapping = []
+                                print(f"[RAG] Fallback detected via keywords")
                         
                         # Rule 2: Low confidence → force fallback (unless TOO_BROAD)
+                        # BUT: Don't force FALLBACK if answer has good quality
                         if confidence < settings.rag_low_confidence_threshold and answer_type != "TOO_BROAD":
-                            answer_type = "FALLBACK"
-                            chunk_indices = []
-                            sentence_mapping = []
-                            print(f"[RAG] Low confidence ({confidence:.2f}) → forced fallback")
+                            # Check if answer is actually good despite low confidence
+                            if answer_length > 500 and (answer_has_chunk_refs or answer_has_citations or len(chunk_indices) > 0):
+                                # Answer has substance → NOT a fallback, just low confidence from LLM
+                                print(f"[RAG] ⚠️ Low confidence ({confidence:.2f}) BUT answer quality good ({answer_length} chars, has citations) → KEEP")
+                                # CRITICAL FIX: Always extract chunks from answer text if answer is good
+                                # Even if chunks were zeroed out earlier, we should restore them
+                                if answer_has_chunk_refs:
+                                    chunk_refs = re.findall(r'chunk\s+(\d+)', answer, re.IGNORECASE)
+                                    extracted_chunks = [int(ref) for ref in chunk_refs[:15]]  # Extract up to 15 chunks
+                                    # Merge with existing chunks, remove duplicates
+                                    if chunk_indices:
+                                        all_chunks = list(set(chunk_indices + extracted_chunks))
+                                        print(f"[RAG] Extracted {len(extracted_chunks)} chunks from answer text, merged with existing {len(chunk_indices)} → total: {len(all_chunks)}")
+                                    else:
+                                        all_chunks = extracted_chunks
+                                        print(f"[RAG] Extracted {len(extracted_chunks)} chunks from answer text (was empty)")
+                                    chunk_indices = all_chunks[:20]  # Limit to 20 chunks max
+                                # Auto-correct type if needed
+                                if answer_type == "FALLBACK":
+                                    if query_type in ["MULTI_CONCEPT_REASONING", "CODE_ANALYSIS", "EXERCISE_GENERATION"]:
+                                        answer_type = query_type
+                                    elif answer_has_chunk_refs or len(chunk_indices) > 0:
+                                        answer_type = "DIRECT"
+                                    else:
+                                        answer_type = "SYNTHESIS"
+                                # CRITICAL FIX: Set confidence based on answer length (more granular)
+                                if answer_length > 1000:
+                                    confidence = 0.85  # Long answer → high confidence
+                                elif answer_length > 700:
+                                    confidence = 0.80  # Medium-long answer
+                                else:
+                                    confidence = 0.75  # Short but good answer
+                                print(f"[RAG] Auto-corrected: type={answer_type}, confidence={confidence:.2f}, chunks={len(chunk_indices)}")
+                            else:
+                                # Real fallback - short answer with low confidence
+                                answer_type = "FALLBACK"
+                                chunk_indices = []
+                                sentence_mapping = []
+                                print(f"[RAG] Low confidence ({confidence:.2f}) → forced fallback")
                     else:
-                        # SECTION_OVERVIEW or DOCUMENT_OVERVIEW: Only fallback if EXPLICITLY no chunks
-                        if not chunk_indices:
-                            answer_type = "FALLBACK"
-                            confidence = 0.0
-                            sentence_mapping = []
-                            print(f"[RAG] {answer_type} but no chunks → fallback")
+                        # CRITICAL FIX: Special handling for SECTION_OVERVIEW
+                        if answer_type == "SECTION_OVERVIEW":
+                            # Check if answer has expected structure
+                            has_title = bool(re.search(r'PHẦN\s+\d+:', answer))
+                            has_content = len(answer) > 100
+                            has_chunks = len(chunk_indices) > 0
+                            
+                            if has_chunks and has_content:
+                                # If we have chunks and substantial content → KEEP IT
+                                if confidence < 0.7:
+                                    confidence = 0.85  # Boost confidence
+                                print(f"[RAG] SECTION_OVERVIEW validated: chunks={len(chunk_indices)}, length={len(answer)}")
+                            elif has_title and has_content:
+                                # Even without chunks, if answer looks structured → KEEP IT
+                                confidence = max(0.75, confidence)
+                                print(f"[RAG] SECTION_OVERVIEW kept despite missing chunks (has structure)")
+                            else:
+                                # Only fallback if answer is really empty/broken
+                                if len(answer) < 50:
+                                    answer_type = "FALLBACK"
+                                    chunk_indices = []
+                                    confidence = 0.0
+                                    print(f"[RAG] SECTION_OVERVIEW too short → fallback")
+                        
+                        # Rule for DOCUMENT_OVERVIEW (similar)
+                        elif answer_type == "DOCUMENT_OVERVIEW":
+                            if len(chunk_indices) > 0 and len(answer) > 200:
+                                if confidence < 0.8:
+                                    confidence = 0.85
+                                print(f"[RAG] DOCUMENT_OVERVIEW validated")
+                            elif len(answer) < 100:
+                                answer_type = "FALLBACK"
+                                chunk_indices = []
+                                confidence = 0.0
+                                print(f"[RAG] DOCUMENT_OVERVIEW too short → fallback")
                         else:
-                            print(f"[RAG] {answer_type} with {len(chunk_indices)} chunks → keeping answer")
+                            # Original validation: Only fallback if EXPLICITLY no chunks
+                            if not chunk_indices:
+                                answer_type = "FALLBACK"
+                                confidence = 0.0
+                                sentence_mapping = []
+                                print(f"[RAG] {answer_type} but no chunks → fallback")
+                            else:
+                                print(f"[RAG] {answer_type} with {len(chunk_indices)} chunks → keeping answer")
                 
                 # Rule 3: CRITICAL - Enforce fallback=0 refs (and TOO_BROAD)
                 if answer_type in ["FALLBACK", "TOO_BROAD"]:
@@ -2492,14 +3129,28 @@ class RAGService:
                     print(f"[RAG] Suspicious: no chunks but claims document source")
                 
                 # Rule 5: Check sentence_mapping consistency (skip for overviews)
+                # CRITICAL FIX: Don't zero out chunks if answer is good (4000-6000 chars)
+                # Instead, mark as SYNTHESIS and keep reasonable confidence
                 if sentence_mapping and answer_type not in ["SECTION_OVERVIEW", "DOCUMENT_OVERVIEW"]:
                     external_count = sum(1 for s in sentence_mapping if s.get("external", False))
                     total_count = len(sentence_mapping)
                     if total_count > 0 and external_count / total_count > 0.5:
-                        answer_type = "FALLBACK"
-                        chunk_indices = []
-                        sentence_mapping = []
-                        print(f"[RAG] >50% external sentences → forced fallback")
+                        # Check if answer is substantial (good synthesis)
+                        answer_length = len(answer)
+                        if answer_length >= 4000:
+                            # Good synthesis answer - don't zero out chunks
+                            answer_type = "SYNTHESIS" if answer_type not in ["FALLBACK", "TOO_BROAD"] else answer_type
+                            # Keep reasonable confidence, don't zero chunks
+                            if confidence > 0.9:
+                                confidence = 0.75  # Reduce but keep reasonable
+                            print(f"[RAG] >50% external but substantial answer ({answer_length} chars) → marked as SYNTHESIS, kept chunks")
+                        else:
+                            # Short answer with >50% external → likely fallback
+                            answer_type = "FALLBACK"
+                            chunk_indices = []
+                            sentence_mapping = []
+                            confidence = 0.0
+                            print(f"[RAG] >50% external sentences + short answer → forced fallback")
                 
                 # Map to full chunk info
                 chunks_used = []
@@ -2511,6 +3162,22 @@ class RAGService:
                                 "document_id": meta.get("document_id")
                             })
                             break
+                
+                # CRITICAL FIX: Confidence-Chunks Paradox Detection
+                # Flag inconsistency: high confidence but no chunks
+                if confidence > 0.7 and len(chunk_indices) == 0 and answer_type not in ["FALLBACK", "TOO_BROAD", "SYNTHESIS"]:
+                    print(f"[RAG] ⚠️ PARADOX DETECTED: confidence={confidence:.2f} but chunks=0!")
+                    print(f"[RAG] Answer type: {answer_type}, Answer length: {len(answer)}")
+                    # Auto-correct: if answer is substantial, mark as SYNTHESIS
+                    if len(answer) >= 2000:
+                        answer_type = "SYNTHESIS"
+                        confidence = 0.75  # Reduce to reasonable level
+                        print(f"[RAG] Auto-corrected to SYNTHESIS with confidence={confidence:.2f}")
+                    else:
+                        # Short answer with high confidence but no chunks → suspicious
+                        answer_type = "FALLBACK"
+                        confidence = 0.0
+                        print(f"[RAG] Auto-corrected to FALLBACK (short answer with no chunks)")
                 
                 print(f"[RAG] Answer type: {answer_type}, Confidence: {confidence:.2f}")
                 print(f"[RAG] Chunks: {chunk_indices}, Sentences mapped: {len(sentence_mapping)}")

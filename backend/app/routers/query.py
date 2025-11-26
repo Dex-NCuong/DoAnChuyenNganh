@@ -29,15 +29,28 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserPublic:
 
 class AskRequest(BaseModel):
     question: str
+    document_ids: Optional[List[str]] = None  # ← THAY ĐỔI: List thay vì single str
+    conversation_id: Optional[str] = None
+    
+    # BACKWARD COMPATIBILITY: Vẫn accept document_id (single) cho old clients
     document_id: Optional[str] = None
-    conversation_id: Optional[str] = None  # To group Q&As in the same conversation
-    # top_k removed - now auto-calculated based on context length
+    
+    class Config:
+        # Example payload
+        json_schema_extra = {  # ← FIX: Pydantic V2 uses json_schema_extra instead of schema_extra
+            "example": {
+                "question": "So sánh let và var trong JavaScript",
+                "document_ids": ["doc_id_1", "doc_id_2"],  # Chọn 2 files
+                "conversation_id": None
+            }
+        }
 
 
 class AskResponse(BaseModel):
     answer: str
     references: List[HistoryReference]
-    documents: List[str]
+    documents: List[str]  # IDs của documents có references
+    documents_searched: List[str]  # ← THÊM: IDs của documents đã search
     conversation_id: Optional[str] = None
     history_id: Optional[str] = None
 
@@ -45,18 +58,46 @@ class AskResponse(BaseModel):
 @router.post("/ask", response_model=AskResponse)
 async def ask_question(payload: AskRequest, current_user: UserPublic = Depends(get_current_user)):
     db = get_database()
+    
+    # ===== BACKWARD COMPATIBILITY LAYER =====
+    # Nếu client gửi document_id (single), convert thành list
+    document_ids_to_use = payload.document_ids
+    if not document_ids_to_use and payload.document_id:
+        document_ids_to_use = [payload.document_id]
+        print(f"[Query] Converted single document_id to list: {document_ids_to_use}")
+    
+    # ===== VALIDATION =====
+    # CRITICAL: Frontend validation đã có, nhưng backend cũng nên check
+    if not document_ids_to_use or len(document_ids_to_use) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Vui lòng chọn ít nhất 1 tài liệu"
+        )
+    
+    # Check limit: tối đa 5 documents cùng lúc (để tránh overload)
+    if len(document_ids_to_use) > 5:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Chỉ có thể chọn tối đa 5 tài liệu (đã chọn: {len(document_ids_to_use)})"
+        )
+    
+    print(f"[Query] Processing question with {len(document_ids_to_use)} document(s): {document_ids_to_use}")
+    
     try:
         result = await rag_service.ask(
             db=db,
             user_id=current_user.id,
             question=payload.question,
-            document_id=payload.document_id,
+            document_ids=document_ids_to_use,  # ← THAY ĐỔI: Pass list
             conversation_id=payload.conversation_id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        # ValueError from RAG service (e.g., document not found)
+        error_msg = str(exc)
+        print(f"[Query] ValueError: {error_msg}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error_msg)
     except Exception as exc:
-        # Catch any other exceptions and return proper error response with CORS headers
+        # Catch any other exceptions
         error_msg = str(exc)
         print(f"[Query] Error in ask_question: {error_msg}")
         import traceback
@@ -69,7 +110,8 @@ async def ask_question(payload: AskRequest, current_user: UserPublic = Depends(g
     return AskResponse(
         answer=result["answer"],
         references=result["references"],
-        documents=result.get("documents", []),
+        documents=result.get("documents", []),  # Documents có references
+        documents_searched=result.get("documents_searched", document_ids_to_use),  # ← THÊM
         conversation_id=result.get("conversation_id"),
         history_id=result.get("history_id"),
     )
