@@ -57,9 +57,10 @@ def detect_query_type_fast(question: str) -> str:
     
     # PRIORITY 2: DOCUMENT_OVERVIEW
     overview_patterns = [
-        r'trong\s+(file|tài\s*liệu)\s+này\s+có\s+gì',
-        r'(file|tài\s*liệu)\s+này\s+(nói|viết|đề\s*cập)\s+về\s+gì',
-        r'tổng\s*quan\s+(file|tài\s*liệu)',
+        r'trong\s+(file|tài\s*liệu)\s+(này\s+)?có\s+gì',  # "trong file có gì" hoặc "trong file này có gì"
+        r'(file|tài\s*liệu)\s+(này\s+)?(nói|viết|đề\s*cập)\s+về\s+gì',
+        r'tổng\s*quan\s+(nội\s*dung\s+)?(của\s+)?(file|tài\s*liệu)',  # "tổng quan nội dung của 2 file"
+        r'tổng\s*quan.*?(file|tài\s*liệu)',
         r'mục\s*lục',
         # CRITICAL: Thêm patterns cho "bao nhiêu phần"
         r'bao\s*nhiêu\s+(phần|chương|module|mục)',
@@ -68,6 +69,8 @@ def detect_query_type_fast(question: str) -> str:
         r'có\s+bao\s*nhiêu\s+(phần|chương|module)',
         r'liệt\s*kê.*?(phần|chương|module)',
         r'tất\s*cả.*?(phần|chương|module)',
+        r'(file|tài\s*liệu).*?có\s+gì',  # "file có gì"
+        r'nội\s*dung.*?(file|tài\s*liệu)',  # "nội dung của file"
     ]
     if any(re.search(p, q) for p in overview_patterns):
         return "DOCUMENT_OVERVIEW"
@@ -275,12 +278,30 @@ def build_gemini_optimized_prompt(
     mode_instructions = ""
     multi_doc_instruction = ""
     
+    # 🔥 CRITICAL FIX: Build multi-doc instruction for DOCUMENT_OVERVIEW
+    if mode == "DOCUMENT_OVERVIEW" and selected_documents and len(selected_documents) > 1:
+        doc_names = [doc.get("filename", "Unknown") for doc in selected_documents]
+        multi_doc_instruction = f"""
+**🚨 CRITICAL: MULTI-DOCUMENT DOCUMENT_OVERVIEW DETECTED**
+You are processing {len(selected_documents)} document(s): {', '.join(doc_names)}
+- **MUST answer for ALL {len(selected_documents)} documents**
+- **MUST process EACH document SEPARATELY**
+- **MUST list ALL sections for EACH document**
+- Format: "Theo tài liệu [filename1]..." then "Theo tài liệu [filename2]..."
+- **DO NOT skip any document** - answer for ALL documents provided
+- **DO NOT mix sections** - clearly separate by document name
+"""
+    
     if mode == "DOCUMENT_OVERVIEW":
         mode_instructions = """
 
-## 📚 DOCUMENT OVERVIEW MODE
+## 📚 DOCUMENT OVERVIEW MODE - SCAN TẤT CẢ CHUNKS ĐỂ TÌM TẤT CẢ PHẦN
 
-User is asking for a complete overview of the entire document (e.g., "bao nhiêu phần", "có gì trong file", "liệt kê tất cả phần").
+User asks: "file có gì", "bao nhiêu phần", "liệt kê các phần"
+
+**🎯 YOUR PRIMARY GOAL:**
+Scan ALL chunks systematically to find EVERY single section (PHẦN 1, 2, 3, ..., 10).
+DO NOT STOP scanning until you've found ALL sections.
 
 **CRITICAL: MULTI-DOCUMENT HANDLING**
 If multiple documents are selected (you will see chunks from different files):
@@ -290,60 +311,72 @@ If multiple documents are selected (you will see chunks from different files):
 - If user asks about multiple files (e.g., "File A có bao nhiêu phần? File B có bao nhiêu module?"), answer BOTH questions separately
 - DO NOT mix sections from different documents - clearly separate by document name
 
-**MANDATORY STEPS (MUST FOLLOW IN ORDER):**
-1. **Identify which document(s) to process:**
-   - If question mentions specific files (e.g., "File Javascript", "File COCOMO"), process those files
-   - If question asks about "file này" or "file này có gì", process ALL selected documents separately
-   - Group chunks by document_id (check chunk metadata or document filename)
+**CRITICAL STEPS (FOLLOW IN ORDER):**
 
-2. **For EACH document, systematically scan ALL chunks:** 
-   - Go through EVERY single chunk from that document
-   - Look for patterns: "PHẦN 1", "PHẦN 2", "PHẦN 3", ..., "PHẦN 10", "Chương 1", "Module 1", etc.
-   - Extract the FULL section title (e.g., "PHẦN 1: Giới thiệu về Javascript")
-   - Create a list of ALL unique sections found for THIS document
+1. **STEP 1: FIND TABLE OF CONTENTS CHUNK (PRIORITY #1)**
+   - Look for chunks containing "MỤC LỤC" or "TABLE OF CONTENTS"
+   - These chunks list ALL sections → most reliable source
+   - If found: Extract ALL section titles from this chunk
+   - Pattern: "PHẦN 1: Title", "PHẦN 2: Title", ..., "PHẦN 10: Title"
 
-3. **Find TABLE OF CONTENTS chunk for each document:** 
-   - Look for chunks containing "MỤC LỤC" or multiple "PHẦN X" headings from the same document
-   - This is the most reliable source for complete section list
-   - Use it to verify your extracted list
+2. **STEP 2: SCAN ALL CHUNKS FOR SECTION HEADINGS**
+   - Go through EVERY chunk systematically (chunk 0, 1, 2, ..., N)
+   - Look for patterns: "PHẦN X:", "Chương X:", "Module X"
+   - Extract section number + title
+   - Create a list: [1, 2, 3, 5, 7, 9] ← Note gaps!
 
-4. **Build complete section list for each document:**
-   - Combine sections from TOC chunk + sections found in other chunks from the SAME document
-   - Remove duplicates
-   - Sort by section number (PHẦN 1, PHẦN 2, ..., PHẦN 10)
-   - If you find PHẦN 1, 2, 3, 5, 7, 9 → you MUST check if PHẦN 4, 6, 8, 10 exist in other chunks from the SAME document
+3. **STEP 3: FILL GAPS (CRITICAL)**
+   - If you found PHẦN 1, 2, 3, 5, 7, 9 → YOU MUST find 4, 6, 8, 10
+   - Keep scanning more chunks until NO gaps remain
+   - Expected: Continuous sequence 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
 
-5. **List ALL main sections for each document:** 
-   - Extract ALL section headings found (PHẦN 1, PHẦN 2, PHẦN 3, ..., PHẦN N)
-   - DO NOT SKIP ANY - if you see PHẦN 1, 2, 3, 5, 7, 9, you MUST check for 4, 6, 8, 10
-   - If document has 10 parts, list ALL 10 parts
+4. **STEP 4: EXTRACT CONTENT FOR EACH SECTION**
+   - For each section number, find chunks describing that section
+   - Extract 1-2 sentences ONLY about what the section covers (KEEP IT SHORT)
+   - Format: "**PHẦN X: Title** - Brief description (1-2 sentences max)"
+   - DO NOT write long paragraphs - be concise like COCOMO example
+   - Use subsection info if available (e.g., "8.1 String, 8.2 Function")
 
-6. **Count sections for each document:** 
-   - If user asks "bao nhiêu phần", provide the exact count AND list all of them for EACH document
-   - Format: "Theo tài liệu [filename], tài liệu này có [X] phần: [list all parts]"
+5. **STEP 5: OUTPUT FORMAT (CRITICAL)**
+   - MUST use numbered list with double newline between items
+   - Format: "1. **PHẦN X: Title** - Description\\n\\n2. **PHẦN Y: Title** - Description\\n\\n..."
+   - NEVER write on same line: "1. Part1 2. Part2" ← WRONG!
 
-7. **Describe each section:** 
-   - For each section found, provide 1-2 sentences describing what it covers
-   - Use information from chunks that mention that section
-   - Clearly indicate which document each section belongs to
-
-8. **Use subsection info:** 
-   - If available, mention key subsections (e.g., "8.1 String, 8.2 Function")
-
-**OUTPUT FORMAT (Single Document):**
+**EXAMPLE OUTPUT (CORRECT FORMAT):**
 ```
-Tài liệu này bao gồm [X] phần sau:
+Tài liệu này bao gồm 10 phần sau:
 
-1. **PHẦN 1: [Title from document]** - [2-3 sentences describing content]
+1. **PHẦN 1: Giới thiệu về Javascript** - Lịch sử phát triển và lý do nên học Javascript.
 
-2. **PHẦN 2: [Title]** - [2-3 sentences describing content]
+2. **PHẦN 2: Tổng quan Javascript** - Công cụ phát triển và cách thực thi chương trình.
 
-...
+3. **PHẦN 3: Cú pháp cơ bản** - Biến, kiểu dữ liệu, toán tử và câu lệnh điều kiện.
 
-[X]. **PHẦN X: [Title]** - [2-3 sentences describing content]
+4. **PHẦN 4: Cú pháp nâng cao** - Function, loop, break/continue và switch-case.
+
+5. **PHẦN 5: Dữ liệu có cấu trúc** - Object và Array với các thao tác cơ bản.
+
+6. **PHẦN 6: Higher-Order Function** - Callback, Promise và Async/Await.
+
+7. **PHẦN 7: Lập trình hướng đối tượng** - OOP principles và tính kế thừa.
+
+8. **PHẦN 8: Cú pháp ES6** - String, Function, Class và Destructuring.
+
+9. **PHẦN 9: Javascript Framework** - jQuery, ReactJS, VueJS và Angular.
+
+10. **PHẦN 10: Bài tập** - 5 bài tập thực hành với unit test.
 
 [Cite chunks used]
 ```
+
+**CRITICAL FORMATTING RULES:**
+- ✅ MUST use double newline (\\n\\n) between each numbered item
+- ✅ Each item MUST be on separate lines with blank line between
+- ✅ Format: "1. **PHẦN X: [Title]** - [description]\\n\\n2. **PHẦN Y: [Title]** - [description]\\n\\n..."
+- ✅ DO NOT write items on same line: "1. Part 1 2. Part 2" ← WRONG!
+- ✅ MUST write: "1. Part 1\\n\\n2. Part 2\\n\\n3. Part 3" ← CORRECT!
+- ✅ **KEEP IT SHORT**: Each section = 1-2 sentences MAX (like COCOMO example)
+- ✅ **TOTAL LENGTH**: Keep answer < 2000 characters to avoid JSON parse errors
 
 **OUTPUT FORMAT (Multiple Documents):**
 ```
@@ -362,7 +395,11 @@ Theo tài liệu [filename2], tài liệu này có [Y] module sau:
 [Cite chunks used from both documents]
 ```
 
-**CRITICAL RULES (MUST FOLLOW):**
+**CRITICAL RULES:**
+- ⚠️ MUST list ALL sections (if document has 10 parts, list ALL 10)
+- ⚠️ Double newline (\\n\\n) between each numbered item
+- ⚠️ NO GAPS: If you see PHẦN 1, 2, 3, 5 → MUST find PHẦN 4
+- ⚠️ Confidence = 0.95 if TOC found, 0.85 if found all without TOC
 - ⚠️ **MUST process EACH document separately** - Do NOT mix sections from different documents
 - ⚠️ **MUST scan EVERY chunk systematically** - Go through chunks one by one, extract ALL "PHẦN X" patterns
 - ⚠️ **MUST list ALL main sections for each document** - If you find PHẦN 1, 2, 3, 5, 7, 9, you MUST check for PHẦN 4, 6, 8, 10 in other chunks from the SAME document
@@ -370,10 +407,10 @@ Theo tài liệu [filename2], tài liệu này có [Y] module sau:
 - ⚠️ **Check for gaps** - If you see PHẦN 1, 2, 3, 5, 7, 9 → scan more chunks from the SAME document to find PHẦN 4, 6, 8, 10
 - ⚠️ **Use ALL chunks from each document** - Don't rely on just a few chunks, scan through ALL provided chunks from each document
 - ⚠️ **If user asks about multiple files, answer BOTH** - Do NOT ignore any file mentioned in the question
+- ⚠️ **FORMATTING**: Numbered lists MUST use double newline (\\n\\n) between items: "1. Part 1\\n\\n2. Part 2\\n\\n3. Part 3"
 - Use section titles from document (don't invent titles)
 - If TABLE OF CONTENTS chunk exists, use it as primary source but still verify by scanning other chunks from the SAME document
 - If user asks "bao nhiêu phần", answer format: "Theo tài liệu [filename], tài liệu này có [X] phần: [list all parts with numbers]"
-- Confidence should be 0.95 if TABLE OF CONTENTS found AND all sections listed, 0.85 if sections found but no TOC, 0.70 if some sections might be missing
 
 **CRITICAL OUTPUT FORMAT (MUST BE VALID JSON):**
 ```json
@@ -544,40 +581,83 @@ Kết nối các khái niệm:
 
 User wants to compare concepts or synthesize knowledge from multiple sections.
 
+**CRITICAL: You MUST extract information from ALL relevant chunks for BOTH items being compared**
+
 **MANDATORY STEPS:**
-1. **Find All Relevant Chunks**: Search for ALL mentioned concepts/items
-2. **Extract Key Points**: For each concept, list main points
-3. **Compare**: Show similarities and differences
-4. **Synthesize**: Create coherent understanding
+1. **Find chunks for BOTH items**: Search chunks for information about BOTH items in the comparison
+2. **Extract ALL key points**: For EACH item, extract ALL main characteristics, differences, similarities
+3. **Create comprehensive table**: Compare ALL aspects in markdown table format
+4. **Cite ALL chunks used**: MUST list ALL chunks that provided information in chunks_used array
 
-**OUTPUT FORMAT (for comparison - USE PROSE, NOT TABLES):**
+**OUTPUT FORMAT (MUST USE MARKDOWN TABLE FOR COMPARISON):**
 ```
-**[Item A]: [Category]**
-- Thông tin 1 từ chunk X: [chi tiết]
-- Thông tin 2 từ chunk Y: [chi tiết]
-- Đặc điểm nổi bật: [mô tả]
+**So sánh [Item A] và [Item B]:**
 
-**[Item B]: [Category]**
-- Thông tin 1 từ chunk A: [chi tiết]
-- Thông tin 2 từ chunk B: [chi tiết]
-- Đặc điểm nổi bật: [mô tả]
+| Tiêu chí | [Item A] | [Item B] |
+|----------|----------|----------|
+| **Định nghĩa** | [Full definition from chunk X] | [Full definition from chunk Y] |
+| **Thời gian** | [Time info from chunk X] | [Time info from chunk Y] |
+| **Cơ sở ước tính** | [Basis from chunk X] | [Basis from chunk Y] |
+| **Đánh giá** | [Assessment from chunk X] | [Assessment from chunk Y] |
+| **Chênh lệch** | [Difference info] | [Difference info] |
 
-**Kết nối / Khác biệt:**
-[Explain how A relates to B, differences, tradeoffs]
-
-[Citations: Chunk X, Y, Z]
+**Kết luận:**
+[Giải thích chi tiết sự khác biệt, điểm giống nhau, và khi nào nên dùng cái nào]
 ```
 
-**CRITICAL: DO NOT use markdown tables (| col1 | col2 |)**
-- Tables are hard to parse when LLM returns plain text
-- Use structured prose format instead
-- Each item gets its own section with bullet points
+**CRITICAL: MUST USE MARKDOWN TABLE FORMAT**
+- ✅ MUST use markdown table: | Tiêu chí | [Item A] | [Item B] |
+- ✅ MUST include separator row: |----------|----------|----------|
+- ✅ Each row compares ONE aspect across both items
+- ✅ MUST extract ALL information from chunks - don't skip or summarize too much
+- ✅ Include at least 5-7 comparison rows (định nghĩa, đặc điểm, ưu/nhược điểm, trường hợp sử dụng, ví dụ)
+- ✅ Each cell should contain COMPLETE information from chunks
+- ✅ **MANDATORY CITATIONS**: EVERY cell MUST end with citation: "(từ chunk X)" or "(từ chunk X, Y)" if multiple chunks
+- ✅ **NO EXCEPTIONS**: If information comes from chunk, MUST cite it. If no chunk info, use: "Thông tin chưa có trong tài liệu"
 
-**CRITICAL RULES:**
+**CRITICAL CITATION RULES:**
+- EVERY row in table MUST cite source chunks
+- Format: "... (từ chunk X)" or "... (từ chunk X, Y, Z)"
+- If info from multiple chunks, cite ALL: "(từ chunk X, Y, Z)"
+- chunks_used array MUST include ALL chunks mentioned
+
+**CRITICAL RULES FOR COMPLETENESS:**
 - MUST find chunks for ALL items being compared
-- If one item has more chunks, it's OK - use what's available
-- Show explicit citations for each point
-- Confidence: 0.7-0.9 depending on chunk coverage
+- MUST extract ALL key points from chunks (extract fully, don't summarize)
+- If comparing 3+ items, add columns: | Tiêu chí | [Item A] | [Item B] | [Item C] |
+- If one item has more chunks, extract ALL information from ALL those chunks
+- **CITATION RULE**: EVERY table cell MUST have citation at the end: "(từ chunk X)" or "(từ chunk X, Y, Z)" - NO EXCEPTIONS
+- If cell combines info from multiple chunks, cite all: "(từ chunk X, Y, Z)"
+- Confidence: 0.8-0.95 if comprehensive chunks found and ALL points extracted
+- If information missing, note in cell: "Thông tin chưa có trong tài liệu"
+
+**Example chunks_used for comparison:**
+```json
+{{
+  "chunks_used": [76, 77, 85, 103, 109, 114],  // ALL chunks used
+  ...
+}}
+```
+
+**CRITICAL**: Never return empty chunks_used if table contains data. Always extract chunk numbers from ALL information sources.
+
+**CRITICAL OUTPUT FORMAT (MUST BE VALID JSON):**
+```json
+{{
+  "answer": "**So sánh [Item A] và [Item B]:**\\n\\n| Tiêu chí | [Item A] | [Item B] |\\n|----------|----------|----------|\\n| **Định nghĩa** | [Định nghĩa đầy đủ từ chunk X] | [Định nghĩa đầy đủ từ chunk Y] |\\n...\\n\\n**Kết luận:**\\n[Giải thích chi tiết]",
+  "answer_type": "COMPARE_SYNTHESIZE",
+  "chunks_used": [chunk_numbers],  # REQUIRED - MUST include ALL chunks that provided information
+  "confidence": 0.8-0.95,
+  "sentence_mapping": [...],
+  "sources": {{"from_document": true, "from_external_knowledge": false}}
+}}
+```
+
+⚠️ CRITICAL: 
+- Output MUST be valid JSON. NO markdown blocks (```json), NO extra text before/after JSON
+- Answer field MUST contain markdown table (with escaped newlines \\n)
+- chunks_used MUST include ALL chunks that provided information for the comparison
+- If you use information from chunks, you MUST list them in chunks_used array
 
 """
     elif is_section_query and section_num:
@@ -637,7 +717,17 @@ Nội dung chính bao gồm:
 
 2. **[Subsection 2]** - [Explanation]
 
+3. **[Subsection 3]** - [Explanation]
+
 ... (liệt kê HẾT tất cả subsections)
+```
+
+**CRITICAL FORMATTING RULES:**
+- ✅ MUST use double newline (\\n\\n) between each numbered item
+- ✅ Each item MUST be on separate lines with blank line between
+- ✅ Format: "1. **[Subsection 1]** - [description]\\n\\n2. **[Subsection 2]** - [description]\\n\\n..."
+- ✅ DO NOT write items on same line: "1. Sub1 2. Sub2" ← WRONG!
+- ✅ MUST write: "1. Sub1\\n\\n2. Sub2\\n\\n3. Sub3" ← CORRECT!
 ```
 
 **JSON OUTPUT:**
@@ -651,16 +741,92 @@ Nội dung chính bao gồm:
 }}
 
 """
+    elif mode == "EXPAND":
+        mode_instructions = """
 
-    if selected_documents:
-        doc_count = len(selected_documents)
-        doc_names = ", ".join(
-            [
-                (doc.get("filename") or doc.get("id") or f"Document {idx + 1}")
-                for idx, doc in enumerate(selected_documents)
-            ]
-        )
-        multi_doc_instruction = f"""
+## 📋 EXPAND MODE - LIỆT KÊ ĐẦY ĐỦ
+
+User wants to list ALL items (e.g., "liệt kê toàn bộ module", "cho ví dụ", "list all modules").
+
+**MANDATORY STEPS (MUST BE COMPREHENSIVE):**
+1. **Scan ALL chunks systematically**: Go through EVERY chunk to find ALL items
+2. **Extract ALL modules/sub-modules**: If question asks about modules, find ALL modules AND sub-modules
+3. **Preserve hierarchy**: If modules have sub-modules (e.g., 3.1, 3.2, 4.1, 4.2), list them ALL with proper hierarchy
+4. **Extract ALL details**: For each module, extract ALL information (name, SLOC, description, sub-modules, etc.)
+
+**CRITICAL RULES FOR MODULE LISTING:**
+- ⚠️ **MUST list ALL modules**: If document has 11 modules, list ALL 11, not just 6
+- ⚠️ **MUST list ALL sub-modules**: If module 3 has 10 sub-modules (3.1, 3.2, ..., 3.10), list ALL 10
+- ⚠️ **Preserve table structure**: If chunks contain table with modules, preserve the table format
+- ⚠️ **Extract ALL columns**: If table has columns (Module, Chức năng, SLOC, Ghi chú), extract ALL columns for ALL rows
+- ⚠️ **Check for gaps**: If you see Module 1, 2, 3, 5, 7, 9 → scan more chunks to find Module 4, 6, 8, 10, 11
+
+**OUTPUT FORMAT (Module Listing with Table):**
+```
+Theo [filename], các module được liệt kê bao gồm:
+
+| Module | Chức năng chính | Ước tính SLOC | Ghi chú |
+|--------|-----------------|---------------|---------|
+| 1. Khởi động dự án | Lập kế hoạch, xác định phạm vi | 500 | Tài liệu, thiết lập môi trường ban đầu |
+| 2. Phân tích yêu cầu | Thu thập & phân tích yêu cầu | 800 | Tài liệu đặc tả, use case, wireframe |
+| 3. Quản lý người dùng | [Chức năng chính] | 12,000 | Module cốt lõi |
+| 3.1 CSDL người dùng | Entity, validation, migration database | 1,500 | [Ghi chú] |
+| 3.2 Đăng ký tài khoản | Form đăng ký, validation, xác thực email | 1,800 | [Ghi chú] |
+| ... (list ALL sub-modules 3.1-3.10) |
+| 4. Quản lý truyện | [Chức năng chính] | 18,000 | Module phức tạp nhất |
+| 4.1 CSDL truyện | Entity phức tạp, quan hệ nhiều bảng | 2,000 | [Ghi chú] |
+| ... (list ALL sub-modules 4.1-4.8) |
+| ... (continue for ALL modules and sub-modules) |
+| 11. Kết thúc dự án | [Chức năng] | [SLOC] | [Ghi chú] |
+```
+
+**OUTPUT FORMAT (Simple List):**
+```
+Theo [filename], các [items] được liệt kê bao gồm:
+
+1. **[Item 1]** - [Description]
+
+2. **[Item 2]** - [Description]
+
+3. **[Item 3]** - [Description]
+
+... (list ALL items found in chunks)
+```
+
+**CRITICAL FORMATTING RULES:**
+- ✅ MUST use double newline (\\n\\n) between each numbered item
+- ✅ Each item MUST be on separate lines with blank line between
+- ✅ Format: "1. Item 1\\n\\n2. Item 2\\n\\n3. Item 3" - NEVER "1. Item 1 2. Item 2"
+- ✅ If table format exists in chunks, preserve it with ALL rows and columns
+- ✅ If modules have sub-modules, show hierarchy clearly (3.1, 3.2, etc.)
+
+**CRITICAL OUTPUT FORMAT (MUST BE VALID JSON):**
+```json
+{{
+  "answer": "Theo [filename], các module được liệt kê bao gồm:\\n\\n| Module | Chức năng | SLOC | Ghi chú |\\n|--------|-----------|------|---------|\\n| 1. [Name] | [Function] | [SLOC] | [Note] |\\n| ... (ALL modules and sub-modules) |",
+  "answer_type": "EXPAND",
+  "chunks_used": [chunk_numbers],
+  "confidence": 0.90-0.98,
+  "sentence_mapping": [...],
+  "sources": {{"from_document": true, "from_external_knowledge": false}}
+}}
+```
+
+⚠️ CRITICAL: Output MUST be valid JSON. NO markdown blocks, NO extra text.
+
+"""
+
+    if selected_documents and len(selected_documents) > 1:
+        # Only add general multi-doc instruction if not already set for DOCUMENT_OVERVIEW
+        if not multi_doc_instruction:
+            doc_count = len(selected_documents)
+            doc_names = ", ".join(
+                [
+                    (doc.get("filename") or doc.get("id") or f"Document {idx + 1}")
+                    for idx, doc in enumerate(selected_documents)
+                ]
+            )
+            multi_doc_instruction = f"""
 
 ## 🔀 MULTI-DOCUMENT QUERY HANDLING
 
@@ -692,7 +858,7 @@ Example multi-document citation:
 - CODE_ANALYSIS: Extract concepts → Apply to code → Step-by-step reasoning → Cite chunks
 - EXERCISE_GENERATION: Understand concepts → Create NEW code → Explain links to document
 - MULTI_CONCEPT_REASONING: Identify concepts → Extract from doc → Connect → Synthesize → Reason
-- COMPARE_SYNTHESIZE: Find all chunks → Extract points → Compare/synthesize → Cite all
+- COMPARE_SYNTHESIZE: Find all chunks → Extract ALL points → Compare in TABLE format → Cite all
 - SECTION_OVERVIEW: Full title + detailed numbered list (4-6 items, 2-3 sentences each)
 - DOCUMENT_OVERVIEW: List main sections with descriptions
 - DIRECT: Use only document text (4-6 sentences max)
@@ -735,16 +901,23 @@ Example (CODE_ANALYSIS):
 ⚠️ DO NOT include markdown code blocks (```json).
 ⚠️ DO NOT include any explanation outside the JSON object.
 - Each section MUST be separated by blank lines (\n\n)
+- For numbered lists (1., 2., 3...), MUST use double newline (\n\n) between items
+- Format: "1. Item 1\\n\\n2. Item 2\\n\\n3. Item 3" - NEVER "1. Item 1 2. Item 2"
 
 Example of CORRECT output:
 {{
-  "answer": "PHẦN 8: CÚ PHÁP ES6\\n\\nNội dung chính bao gồm:\\n\\n1. **String** - Template Literals...",
+  "answer": "PHẦN 8: CÚ PHÁP ES6\\n\\nNội dung chính bao gồm:\\n\\n1. **String** - Template Literals...\\n\\n2. **Function** - Arrow functions...\\n\\n3. **Class** - ES6 classes...",
   "answer_type": "SECTION_OVERVIEW",
   "chunks_used": [204, 205, 208],
   "confidence": 0.95,
   "sentence_mapping": [{{"sentence": "first sentence", "chunk": 204, "external": false}}],
   "sources": {{"from_document": true, "from_external_knowledge": false}}
 }}
+
+⚠️ CRITICAL FORMATTING:
+- Numbered lists MUST use double newline (\\n\\n) between items
+- Format: "1. Item 1\\n\\n2. Item 2\\n\\n3. Item 3"
+- NEVER: "1. Item 1 2. Item 2 3. Item 3" (all on one line)
 
 Example of WRONG output (NEVER do this):
 "Here is the answer: PHẦN 8..." ← NO! This is not JSON!
@@ -784,8 +957,9 @@ class RAGService:
 
         self.max_tokens = settings.llm_max_tokens
 
-        # CRITICAL FIX: Giảm max_context_length để tránh MAX_TOKENS error
-        self.max_context_length = min(12000, settings.rag_max_context_length)
+        # 🔥 CRITICAL FIX: Context length động theo query type
+        self.base_max_context_length = min(12000, settings.rag_max_context_length)
+        self.extended_max_context_length = 50000  # Extended context cho DOCUMENT_OVERVIEW
         
         # CRITICAL FIX: Tăng max_output_tokens cho Gemini
         # CRITICAL FIX: Tăng max_output_tokens cho câu trả lời dài
@@ -860,10 +1034,10 @@ class RAGService:
         else:
             multiplier = 1.0  # Single file: no multiplier
         
-        # CRITICAL FIX: DOCUMENT_OVERVIEW cần NHIỀU chunks nhất để scan toàn bộ document
+        # 🔥 CRITICAL FIX: DOCUMENT_OVERVIEW cần NHIỀU chunks nhất để scan toàn bộ document
         if query_type == "DOCUMENT_OVERVIEW":
-            base = 150  # Tăng từ 50 lên 150 để scan đủ chunks
-            return int(base * multiplier)  # 100 → 150 cho multi-doc
+            base = 300  # Tăng từ 150 lên 300 để scan đủ 10+ phần
+            return int(base * multiplier)  # 1 file: 300, 2 files: 450, 3+ files: 600
         
         # CRITICAL FIX: SECTION_OVERVIEW cần chunks vừa phải
         if query_type == "SECTION_OVERVIEW":
@@ -888,13 +1062,13 @@ class RAGService:
                 base = 20
             return int(base * multiplier)
         
-        # Tier 2 (Compare/Synthesize): Cần chunks từ nhiều sections
+        # Tier 2 (Compare/Synthesize): Cần chunks từ nhiều sections - TĂNG để đầy đủ hơn
         if query_type in ["COMPARE_SYNTHESIZE", "COMPARE"]:
             # Check if comparing 2+ items
             if any(word in q_lower for word in ["và", "với", "so với", ","]):
-                base = 25  # Need chunks for multiple items
+                base = 35  # Tăng từ 25 lên 35 để có đủ chunks cho so sánh đầy đủ
             else:
-                base = 20
+                base = 30  # Tăng từ 20 lên 30
             return int(base * multiplier)
         
         # Tier 3 (List all / Enumerate)
@@ -951,6 +1125,134 @@ class RAGService:
         numbered_pattern = r'^(\d+\.)+\s*\d+[\.\s]+'
         return bool(re.match(numbered_pattern, text.strip()))
 
+    def _fix_numbered_list_formatting(self, text: str) -> str:
+        """Fix numbered list formatting AND table row formatting.
+        
+        Converts: "1. Item 1 2. Item 2 3. Item 3"
+        To: "1. Item 1\n\n2. Item 2\n\n3. Item 3"
+        
+        Also fixes table rows to ensure newlines between rows.
+        """
+        if not text:
+            return text
+        
+        import re
+        
+        # Pattern 1: Fix numbered items on same line without newline: "1. ... 2. ..."
+        # Match: (number + dot + space + content) followed by space + (number + dot + space)
+        # But exclude sub-numbering patterns like "3.1. " or "5.2. "
+        fixed = re.sub(
+            r'(\d+\.\s+[^\n]+?)\s+(\d+\.\s+)(?![^\n]*\d+\.\d+\.)',  # Exclude if followed by sub-numbering
+            r'\1\n\n\2',
+            text
+        )
+        
+        # Pattern 2: Items separated by single newline: "1. ...\n2. ..."
+        fixed = re.sub(
+            r'(\d+\.\s+[^\n]+)\n(?!\n)(\d+\.\s+)(?![^\n]*\d+\.\d+\.)',
+            r'\1\n\n\2',
+            fixed
+        )
+        
+        # Pattern 3: Items with space before number: " ... 2. ..."
+        # This handles cases where there's content then space then numbered item
+        fixed = re.sub(
+            r'([^\n])\s+(\d+\.\s+)(?![^\n]*\d+\.\d+\.)',
+            r'\1\n\n\2',
+            fixed
+        )
+        
+        # Pattern 4: Fix table rows - ensure newlines between rows
+        # Match: | col1 | col2 | (no newline) | col3 | col4 |
+        # Replace: | col1 | col2 |\n| col3 | col4 |
+        # But be careful not to break existing table formatting
+        fixed = re.sub(
+            r'(\|[^\n|]+\|)\s+(\|[^\n|]+\|)',  # Two consecutive rows without \n
+            r'\1\n\2',
+            fixed
+        )
+        
+        # Clean up: Remove triple or more newlines (keep only double)
+        fixed = re.sub(r'\n{3,}', '\n\n', fixed)
+        
+        # Final cleanup: Ensure no trailing spaces before newlines
+        fixed = re.sub(r' +\n', '\n', fixed)
+        
+        # Debug: Log if we found numbered items
+        numbered_items = len(re.findall(r'^\d+\.\s+', fixed, re.MULTILINE))
+        if numbered_items > 0:
+            print(f"[RAG] _fix_numbered_list_formatting: Found {numbered_items} numbered items, double_newlines={fixed.count(chr(10)*2)}")
+        
+        return fixed
+    
+    def _clean_table_citations(self, text: str) -> str:
+        """Remove citation lines from comparison tables.
+        
+        Removes:
+        - "Nguồn tham khảo: ..." lines at the end
+        - "(từ chunk X)" citations in table cells AND in conclusion text
+        - Standalone "chunk X" references in table cells
+        """
+        if not text or "|" not in text:
+            return text
+        
+        import re
+        
+        # Remove "Nguồn tham khảo:" line at the end (after table)
+        # Pattern: "Nguồn tham khảo:" followed by document name and chunk numbers
+        text = re.sub(
+            r'\n\s*\*\*?Nguồn tham khảo:?\*\*?\s*[^\n]*(?:chunk\s+\d+(?:\s*,\s*\d+)*)*\s*',
+            '',
+            text,
+            flags=re.IGNORECASE
+        )
+        text = re.sub(
+            r'\n\s*Nguồn tham khảo:?\s*[^\n]*(?:chunk\s+\d+(?:\s*,\s*\d+)*)*\s*',
+            '',
+            text,
+            flags=re.IGNORECASE
+        )
+        
+        # Remove citations in table cells: "(từ chunk X)" or "(từ chunk X, Y, Z)"
+        # Also remove in conclusion text if table exists
+        lines = text.split('\n')
+        cleaned_lines = []
+        in_table = False
+        for line in lines:
+            # Check if this is a table row (contains | but not separator row)
+            is_table_row = '|' in line and not re.match(r'^\|[-:|\s]+\|', line.strip())
+            if is_table_row:
+                in_table = True
+                # This is a table row
+                # Remove citations: "(từ [filename], chunk X)" or "(từ [filename], chunk X, Y, Z)" or "(từ chunk X)"
+                # Pattern 1: "(từ filename.pdf, chunk X)" or "(từ filename.pdf, chunk X, Y, Z)"
+                line = re.sub(r'\(từ\s+[^,)]+,\s*chunk\s+\d+(?:\s*,\s*\d+)*\s*\)', '', line, flags=re.IGNORECASE)
+                # Pattern 2: "(từ chunk X)" or "(từ chunk X, Y, Z)" (fallback for old format)
+                line = re.sub(r'\(từ\s+chunk\s+\d+(?:\s*,\s*\d+)*\s*\)', '', line, flags=re.IGNORECASE)
+                # Remove standalone chunk references: "chunk X" or "chunk X, Y, Z" (not in parentheses, at end of cell)
+                line = re.sub(r'\s+chunk\s+\d+(?:\s*,\s*\d+)*\s*(?=\||$)', '', line, flags=re.IGNORECASE)
+                # Clean up extra spaces
+                line = re.sub(r'\s{2,}', ' ', line)
+            elif in_table and line.strip() and not line.strip().startswith('|'):
+                # This is text after table (like conclusion) - also remove citations
+                # Pattern 1: "(từ [filename], chunk X)" or "(từ [filename], chunk X, Y, Z)"
+                line = re.sub(r'\(từ\s+[^,)]+,\s*chunk\s+\d+(?:\s*,\s*\d+)*\s*\)', '', line, flags=re.IGNORECASE)
+                # Pattern 2: "(từ chunk X)" or "(từ chunk X, Y, Z)" (fallback)
+                line = re.sub(r'\(từ\s+chunk\s+\d+(?:\s*,\s*\d+)*\s*\)', '', line, flags=re.IGNORECASE)
+                # Remove standalone chunk references at end of sentences
+                line = re.sub(r'\s+chunk\s+\d+(?:\s*,\s*\d+)*\s*(?=[\.\n]|$)', '', line, flags=re.IGNORECASE)
+                # Clean up extra spaces
+                line = re.sub(r'\s{2,}', ' ', line)
+            cleaned_lines.append(line)
+        
+        text = '\n'.join(cleaned_lines)
+        
+        # Final cleanup: remove empty lines and extra spaces
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = text.strip()
+        
+        return text
+    
     def _is_fallback_answer(self, answer: str) -> bool:
         """Enhanced fallback detection."""
         if not answer or len(answer.strip()) < 20:
@@ -989,25 +1291,28 @@ class RAGService:
             print(f"[RAG] Raw text (first 200 chars): {cleaned[:200]}")
             
             # ENHANCED: Try multiple JSON extraction methods
+            # CRITICAL: Handle tables in JSON answer field
             methods = [
-                # Method 1: Find first { to last }
-                lambda s: re.search(r'\{.*\}', s, re.DOTALL),
-                # Method 2: Find ```json blocks
+                # Method 1: Find ```json blocks (most reliable)
                 lambda s: re.search(r'```json\s*(\{.*?\})\s*```', s, re.DOTALL),
-                # Method 3: Find after "answer":" pattern
-                lambda s: re.search(r'"answer"\s*:\s*".*?".*?\}', s, re.DOTALL),
+                # Method 2: Find JSON with proper quote handling for multiline strings
+                lambda s: self._extract_json_with_multiline_string(s),
+                # Method 3: Find first { to last } (fallback)
+                lambda s: re.search(r'\{.*\}', s, re.DOTALL),
             ]
             
-            for method in methods:
+            for i, method in enumerate(methods):
                 match = method(cleaned)
                 if match:
                     try:
                         json_str = match.group(1) if match.lastindex else match.group(0)
+                        # Try to fix common JSON issues with tables
+                        json_str = self._fix_json_with_table(json_str)
                         parsed = json.loads(json_str)
-                        print(f"[RAG] ✅ Extracted JSON using method")
+                        print(f"[RAG] ✅ Extracted JSON using method {i+1}")
                         return parsed
                     except Exception as e:
-                        print(f"[RAG] Method failed: {e}")
+                        print(f"[RAG] Method {i+1} failed: {e}")
                         continue
             
             # Method 4: Reconstruct JSON from text
@@ -1023,6 +1328,23 @@ class RAGService:
         # Try direct parse
         try:
             parsed = json.loads(cleaned)
+            
+            # CRITICAL FIX: If answer field is a string with escaped JSON, extract it
+            if "answer" in parsed and isinstance(parsed["answer"], str):
+                answer_str = parsed["answer"]
+                # Check if answer contains JSON structure (escaped)
+                if '"answer"' in answer_str and ('"answer_type"' in answer_str or '"chunks_used"' in answer_str):
+                    # Try to extract the actual answer text
+                    try:
+                        # Find the answer field value in the escaped JSON string
+                        match = re.search(r'"answer"\s*:\s*"((?:[^"\\]|\\.|\\n)*)"', answer_str, re.DOTALL)
+                        if match:
+                            # Properly unescape JSON string
+                            extracted = json.loads('"' + match.group(1) + '"')
+                            parsed["answer"] = extracted
+                            print(f"[RAG] ✅ Extracted nested answer from escaped JSON string")
+                    except:
+                        pass
             
             # CRITICAL FIX: Answer Type Validation with Auto-correction
             VALID_ANSWER_TYPES = {
@@ -1123,26 +1445,161 @@ class RAGService:
         print(f"[RAG] All parsing attempts failed. Attempting reconstruction...")
         return self._reconstruct_json_from_text(cleaned, query_type)
     
+    def _extract_json_with_multiline_string(self, text: str):
+        """Extract JSON that may contain multiline strings (like tables)."""
+        # Look for JSON structure: {"answer": "...", ...}
+        # Handle multiline strings in answer field
+        pattern = r'\{\s*"answer"\s*:\s*"((?:[^"\\]|\\.|\\n)*)"'
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            # Find the complete JSON object
+            start = text.find('{')
+            if start >= 0:
+                # Try to find matching closing brace
+                brace_count = 0
+                in_string = False
+                escape_next = False
+                for i in range(start, len(text)):
+                    char = text[i]
+                    if escape_next:
+                        escape_next = False
+                        continue
+                    if char == '\\':
+                        escape_next = True
+                        continue
+                    if char == '"' and not escape_next:
+                        in_string = not in_string
+                    if not in_string:
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                return re.match(r'.*', text[start:i+1], re.DOTALL)
+        return None
+    
+    def _fix_json_with_table(self, json_str: str) -> str:
+        """Fix common JSON issues when answer contains markdown tables."""
+        # If answer field contains unescaped newlines, try to fix
+        # Look for "answer": "..." pattern and ensure newlines are escaped
+        # But be careful - if it's already valid JSON, don't break it
+        
+        # First, try to parse as-is
+        try:
+            json.loads(json_str)
+            return json_str  # Already valid
+        except:
+            pass
+        
+        # Try to fix: replace literal newlines in string values with \n
+        # This is tricky - we need to be careful not to break valid JSON
+        # Only fix if we detect the issue is with newlines in answer field
+        if '\n' in json_str and '"answer"' in json_str:
+            # Try to escape newlines in the answer field only
+            # Pattern: "answer": "text with\nnewlines"
+            def escape_newlines_in_quotes(match):
+                content = match.group(1)
+                # Escape newlines, but preserve \n if already escaped
+                content = content.replace('\n', '\\n').replace('\\n\\n', '\\n')
+                return f'"answer": "{content}"'
+            
+            # This is complex - for now, just return original and let reconstruction handle it
+            pass
+        
+        return json_str
+    
     def _reconstruct_json_from_text(self, text: str, query_type: str) -> dict:
         """Reconstruct JSON from plain text answer (fallback)."""
         
-        # Extract chunks mentioned in text
-        chunk_pattern = r'\[Chunk\s+(\d+)\]|chunk\s+(\d+)'
+        # CRITICAL FIX: For COMPARE_SYNTHESIZE with table, auto-extract chunks from selected_results
+        has_table = "|" in text and any(re.search(pattern, text, re.MULTILINE) for pattern in [
+            r'^\|.*\|.*\|',  # Table row pattern
+        ])
+        
         chunks_found = []
-        for match in re.finditer(chunk_pattern, text, re.IGNORECASE):
-            chunk_num = match.group(1) or match.group(2)
-            if chunk_num:
-                chunks_found.append(int(chunk_num))
-        chunks_found = list(set(chunks_found))  # Deduplicate
+        if query_type == "COMPARE_SYNTHESIZE" and has_table:
+            # Auto-extract chunks from selected_results if available
+            if hasattr(self, 'selected_results') and self.selected_results:
+                print(f"[RAG] COMPARE_SYNTHESIZE with table but no chunks found, will use selected chunks")
+                for item in self.selected_results[:min(15, len(self.selected_results))]:
+                    record = item.get("_record")
+                    if record:
+                        chunk_idx = record.get("chunk_index")
+                        doc_id = record.get("document_id")
+                        if chunk_idx is not None and doc_id:
+                            chunks_found.append({
+                                "chunk_index": chunk_idx,
+                                "document_id": doc_id
+                            })
+                print(f"[RAG] ✅ Auto-extracted {len(chunks_found)} chunks from selected_results for COMPARE_SYNTHESIZE")
+        
+        # Extract chunks mentioned in text (fallback if not found above)
+        # Note: chunks_found might be list of dicts (from selected_results) or list of ints (from text)
+        chunks_from_text = []
+        if not chunks_found or (isinstance(chunks_found[0], dict) and len(chunks_found) < 3):
+            chunk_pattern = r'\[Chunk\s+(\d+)\]|chunk\s+(\d+)|\(từ\s+chunk\s+(\d+)'
+            for match in re.finditer(chunk_pattern, text, re.IGNORECASE):
+                chunk_num = match.group(1) or match.group(2) or match.group(3)
+                if chunk_num:
+                    chunks_from_text.append(int(chunk_num))
+            chunks_from_text = list(set(chunks_from_text))  # Deduplicate
+        
+        # If we have dict chunks (from selected_results), keep them; otherwise use int chunks
+        if isinstance(chunks_found, list) and len(chunks_found) > 0 and isinstance(chunks_found[0], dict):
+            # Already have dict format from selected_results
+            pass
+        elif chunks_from_text:
+            # Convert int chunks to dict format (will need document_id later)
+            chunks_found = [{"chunk_index": idx} for idx in chunks_from_text]
+        else:
+            chunks_found = []
         
         # Determine answer type from content
         text_lower = text.lower()
         answer_type = "FALLBACK"
         confidence = 0.0
         
-        if query_type == "SECTION_OVERVIEW" or any(marker in text_lower for marker in ['phần', 'nội dung chính', 'bao gồm']):
+        # 🔥 CRITICAL FIX: Handle DOCUMENT_OVERVIEW when JSON parse fails
+        if query_type == "DOCUMENT_OVERVIEW":
+            # Check if answer contains numbered list of sections
+            has_numbered_sections = bool(re.search(r'\d+\.\s+\*\*PHẦN\s+\d+', text, re.IGNORECASE))
+            has_sections = bool(re.search(r'PHẦN\s+\d+', text, re.IGNORECASE))
+            
+            if has_numbered_sections or has_sections:
+                answer_type = "DOCUMENT_OVERVIEW"
+                # Extract chunks from selected_results if available
+                if hasattr(self, 'selected_results') and self.selected_results:
+                    print(f"[RAG] DOCUMENT_OVERVIEW JSON parse failed, recovering chunks from selected_results")
+                    chunks_found = []
+                    for item in self.selected_results[:min(50, len(self.selected_results))]:
+                        record = item.get("_record")
+                        if record:
+                            chunk_idx = record.get("chunk_index")
+                            doc_id = record.get("document_id")
+                            if chunk_idx is not None and doc_id:
+                                chunks_found.append({
+                                    "chunk_index": chunk_idx,
+                                    "document_id": doc_id
+                                })
+                    print(f"[RAG] ✅ Recovered {len(chunks_found)} chunks for DOCUMENT_OVERVIEW")
+                
+                # Count sections found
+                section_numbers = re.findall(r'PHẦN\s+(\d+)', text, re.IGNORECASE)
+                section_count = len(set(section_numbers))
+                confidence = min(0.90, 0.7 + (section_count * 0.02))  # Boost based on section count
+                print(f"[RAG] DOCUMENT_OVERVIEW recovery: {section_count} sections found, confidence={confidence:.2f}")
+        
+        elif query_type == "SECTION_OVERVIEW" or any(marker in text_lower for marker in ['phần', 'nội dung chính', 'bao gồm']):
             answer_type = "SECTION_OVERVIEW"
             confidence = 0.75 if chunks_found else 0.5
+        elif query_type == "COMPARE_SYNTHESIZE" or (query_type == "COMPARE_SYNTHESIZE" and ("|" in text or "so sánh" in text_lower or "khác" in text_lower)):
+            answer_type = "COMPARE_SYNTHESIZE"
+            # Nếu có bảng markdown thì confidence cao hơn
+            confidence = 0.85 if "|" in text else 0.75
+            # CRITICAL: COMPARE_SYNTHESIZE should always have references if table exists
+            if "|" in text and not chunks_found:
+                # Try to extract chunks from selected_results if available
+                print(f"[RAG] COMPARE_SYNTHESIZE with table but no chunks found, will use selected chunks")
         elif query_type == "CODE_ANALYSIS" and "phân tích" in text_lower:
             answer_type = "CODE_ANALYSIS"
             confidence = 0.7
@@ -1156,9 +1613,45 @@ class RAGService:
             answer_type = "DIRECT"
             confidence = 0.6
         
-        # Extract main answer (first 1000 chars or until double newline)
-        answer_match = re.search(r'^(.+?)(?:\n\n|$)', text, re.DOTALL)
-        answer = answer_match.group(1) if answer_match else text[:1000]
+        # Extract main answer - CRITICAL: Keep full table if present
+        # Check if text contains a markdown table (has | characters in table format)
+        # More flexible pattern: look for table header row and separator or multiple rows with |
+        table_patterns = [
+            r'\|.*\|.*\n\|[-:]+\|',  # Header + separator
+            r'\|.*\|.*\n\|.*\|.*\n\|.*\|',  # At least 3 rows with |
+            r'\|.*Tiêu chí.*\|.*\|',  # Vietnamese table header
+        ]
+        has_table = "|" in text and any(re.search(pattern, text, re.MULTILINE) for pattern in table_patterns)
+        
+        print(f"[RAG] Reconstruction: text_length={len(text)}, has_table={has_table}, query_type={query_type}")
+        if has_table:
+            print(f"[RAG] Table detected! Keeping full text (first 300 chars: {text[:300]})")
+            # For tables, keep the ENTIRE text including table
+            # Don't truncate - tables need to be complete
+            # Only limit if text is extremely long (over 10000 chars)
+            if len(text) > 10000:
+                # Try to find a reasonable end point
+                # Look for "Kết luận" or "Nguồn" sections
+                end_markers = [
+                    r'(.*?)(?:\n\n(?:Kết luận|Nguồn|\*\*Kết|\*\*Nguồn|Nguồn tham khảo))',
+                    r'(.*?)(?:\n\n\n)',
+                ]
+                for pattern in end_markers:
+                    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+                    if match and len(match.group(1)) > 500:
+                        answer = match.group(1).strip()
+                        break
+                else:
+                    # No good end point found, take first 10000 chars
+                    answer = text[:10000]
+            else:
+                # Text is reasonable length, keep it all
+                answer = text
+        else:
+            # For non-table answers, use original logic but increase limit
+            answer_match = re.search(r'^(.+?)(?:\n\n|$)', text, re.DOTALL)
+            answer = answer_match.group(1) if answer_match else text[:2000]  # Increased from 1000
+        
         answer = answer.strip()
         
         # CRITICAL FIX: Build sentence_mapping from text
@@ -1195,7 +1688,10 @@ class RAGService:
                 if not related_chunk and chunks_found:
                     # Heuristic: if sentence contains keywords that might relate to chunks
                     # Use first chunk as fallback (better than nothing)
-                    related_chunk = chunks_found[0] if len(chunks_found) == 1 else None
+                    if isinstance(chunks_found[0], dict):
+                        related_chunk = chunks_found[0].get("chunk_index")
+                    else:
+                        related_chunk = chunks_found[0] if len(chunks_found) == 1 else None
                 
                 sentence_mapping.append({
                     "sentence": sent[:200],  # Truncate to 200 chars
@@ -1203,12 +1699,22 @@ class RAGService:
                     "external": related_chunk is None
                 })
         
-        print(f"[RAG] Reconstructed JSON: answer_type={answer_type}, confidence={confidence:.2f}, chunks={len(chunks_found)}, sentences={len(sentence_mapping)}")
+        # Convert chunks_found to proper format
+        chunks_used = []
+        if chunks_found:
+            if isinstance(chunks_found[0], dict):
+                # Already in correct format
+                chunks_used = chunks_found[:15]  # Limit to 15 chunks
+            else:
+                # Convert int list to dict format
+                chunks_used = [{"chunk_index": idx} for idx in chunks_found[:15]]
+        
+        print(f"[RAG] Reconstructed JSON: answer_type={answer_type}, confidence={confidence:.2f}, chunks={len(chunks_used)}, sentences={len(sentence_mapping)}")
         
         return {
             "answer": answer,
             "answer_type": answer_type,
-            "chunks_used": chunks_found[:10] if chunks_found else [],
+            "chunks_used": chunks_used,
             "confidence": confidence,
             "sentence_mapping": sentence_mapping,  # CRITICAL FIX: Now includes actual mapping
             "sources": {
@@ -1413,7 +1919,11 @@ class RAGService:
                     # SECTION_OVERVIEW cần chunks vừa phải
                     search_k = min(100, index.ntotal)
                 elif query_type in ["MULTI_CONCEPT_REASONING", "COMPARE_SYNTHESIZE", "CODE_ANALYSIS"]:
-                    search_k = min(50, index.ntotal)  # Increased from 30
+                    # COMPARE_SYNTHESIZE cần nhiều chunks hơn để so sánh đầy đủ
+                    if query_type == "COMPARE_SYNTHESIZE":
+                        search_k = min(75, index.ntotal)  # Tăng từ 50 lên 75 cho so sánh
+                    else:
+                        search_k = min(50, index.ntotal)  # Giữ nguyên cho các loại khác
                 else:
                     search_k = min(30, index.ntotal)
 
@@ -1642,10 +2152,30 @@ class RAGService:
 
 
 
-            # Apply boosts (combine keyword boost + section boost)
+            # CRITICAL FIX: For comparison queries, boost chunks containing BOTH compared items
+            comparison_boost = 0.0
+            if query_type == "COMPARE_SYNTHESIZE":
+                # Extract items being compared from question
+                compare_keywords = []
+                question_normalized = question_lower
+                if "so sánh" in question_lower or "so với" in question_lower:
+                    # Extract key terms: "COCOMO", "WBS", "thời gian", etc.
+                    words = question_normalized.split()
+                    for word in words:
+                        if len(word) > 3 and word not in ["so", "sánh", "với", "theo", "và", "của", "cho", "là", "có", "được", "trong", "từ"]:
+                            compare_keywords.append(word)
+                
+                # Boost chunks containing comparison keywords
+                keyword_count = sum(1 for kw in compare_keywords if kw in content_lower)
+                
+                if keyword_count >= 2:  # Contains at least 2 comparison terms
+                    comparison_boost = min(0.4, keyword_count * 0.15)
+                    print(f"[RAG] Comparison boost +{comparison_boost:.3f} for chunk {record.get('chunk_index')} (keywords: {keyword_count})")
+            
+            # Apply boosts (combine keyword boost + section boost + comparison boost)
             total_boost = 0.0
             boost_details = []
-
+            
             if keyword_matches > 0:
                 boost = min(0.3, keyword_matches * 0.08)
                 total_boost += boost
@@ -1658,22 +2188,31 @@ class RAGService:
                 total_boost += section_boost
                 boost_details.append("main_section")
             
-            # CRITICAL FIX: Boost chunks chứa MỤC LỤC hoặc headings chính
-            # Pattern 1: Boost chunks chứa "MỤC LỤC"
+            # CRITICAL FIX: Add comparison boost for COMPARE_SYNTHESIZE
+            if comparison_boost > 0:
+                total_boost += comparison_boost
+                boost_details.append("comparison")
+            
+            # 🔥 CRITICAL FIX: Priority tier cho TOC
+            toc_priority_boost = 0.0
             if "mục lục" in content_lower or "table of contents" in content_lower:
-                toc_boost = 0.8
-                total_boost += toc_boost
-                boost_details.append("table_of_contents")
-                print(f"[RAG] Boosted chunk {record.get('chunk_index')} - contains TABLE OF CONTENTS")
+                toc_priority_boost = 2.0  # Tăng từ 0.8 lên 2.0 (siêu mạnh)
+                item["is_toc"] = True
+                print(f"[RAG] 🎯 TABLE OF CONTENTS detected in chunk {record.get('chunk_index')} → priority boost +2.0")
             
             # Pattern 2: Boost chunks chứa nhiều PHẦN X
             # Đếm số lượng "PHẦN X" trong content
             section_count = len(re.findall(r'PHẦN\s+\d+', content, re.IGNORECASE))
             if section_count >= 3:  # Nếu có từ 3 PHẦN trở lên → đây là chunk overview
-                overview_boost = min(0.6, section_count * 0.15)
+                overview_boost = min(1.0, section_count * 0.2)  # Tăng từ 0.15 lên 0.2
                 total_boost += overview_boost
                 boost_details.append(f"overview({section_count}_sections)")
                 print(f"[RAG] Boosted chunk {record.get('chunk_index')} - contains {section_count} section headings")
+            
+            # Apply TOC boost (highest priority)
+            if toc_priority_boost > 0:
+                total_boost += toc_priority_boost
+                boost_details.append("TABLE_OF_CONTENTS")
             
             if total_boost > 0:
                 item["similarity"] = min(1.0, item["similarity"] + total_boost)
@@ -1682,8 +2221,17 @@ class RAGService:
 
 
         # Sort by boosted similarity
-
         sorted_results = sorted(results, key=lambda r: r["similarity"], reverse=True)
+        
+        # 🔥 CRITICAL FIX: Đưa TOC chunks lên đầu
+        # Separate TOC chunks from regular chunks
+        toc_chunks = [item for item in sorted_results if item.get("is_toc", False)]
+        non_toc_chunks = [item for item in sorted_results if not item.get("is_toc", False)]
+        
+        # TOC chunks first, then regular chunks
+        sorted_results = toc_chunks + non_toc_chunks
+        if toc_chunks:
+            print(f"[RAG] Prioritized {len(toc_chunks)} TOC chunks at top")
 
 
 
@@ -1802,7 +2350,7 @@ class RAGService:
                 context_limit = 50000  # Tăng từ 22k → 50k
             print(f"[RAG] DOCUMENT_OVERVIEW: Using extended context limit: {context_limit} chars, max_chunks: {max_selected_chunks} (for {num_docs} document(s))")
         else:
-            context_limit = self.max_context_length
+            context_limit = self.base_max_context_length
 
         # CRITICAL FIX: For multi-doc DOCUMENT_OVERVIEW, ensure chunks from ALL documents
         # Instead of just top chunks by similarity, select top chunks from EACH document
@@ -2023,6 +2571,9 @@ class RAGService:
                         chunk_meta["similarity"] = item.get("similarity", 0.5)
                         break
         
+        # CRITICAL FIX: Store selected_results for recovery mechanism in COMPARE_SYNTHESIZE
+        self.selected_results = selected_results
+        
         # ENHANCED: Generate answer with query_type passed to prompt builder
         answer, chunks_actually_used, answer_type, confidence, sentence_mapping = \
             await self._generate_answer_with_tracking(
@@ -2158,10 +2709,28 @@ class RAGService:
         
         if answer_type in ["FALLBACK", "TOO_BROAD"]:
             # STRICT RULE: FALLBACK/TOO_BROAD = 0 references
-            final_references = []
-            print(f"[RAG] ✓ {answer_type} detected → 0 references enforced")
+            # EXCEPTION: If COMPARE_SYNTHESIZE has table, try to recover chunks
+            if answer_type == "FALLBACK" and query_type == "COMPARE_SYNTHESIZE" and "|" in answer:
+                # Try to use selected chunks for comparison tables
+                if selected_results:
+                    print(f"[RAG] COMPARE_SYNTHESIZE with table but FALLBACK → trying to recover chunks from selected_results")
+                    # Use top chunks from selected_results
+                    for item in selected_results[:10]:  # Use top 10 chunks
+                        record = item.get("_record")
+                        if record:
+                            chunks_actually_used.append({
+                                "chunk_index": record.get("chunk_index"),
+                                "document_id": record.get("document_id")
+                            })
+                    if chunks_actually_used:
+                        answer_type = "COMPARE_SYNTHESIZE"  # Override FALLBACK
+                        confidence = 0.75  # Set reasonable confidence
+                        print(f"[RAG] ✅ Recovered {len(chunks_actually_used)} chunks for COMPARE_SYNTHESIZE")
+            if answer_type in ["FALLBACK", "TOO_BROAD"]:  # Still fallback after recovery attempt
+                final_references = []
+                print(f"[RAG] ✓ {answer_type} detected → 0 references enforced")
             
-        elif not chunks_actually_used:
+        if answer_type not in ["FALLBACK", "TOO_BROAD"] and not chunks_actually_used:
             # No chunks but not fallback → suspicious
             if confidence > 0.5 and len(answer) > 100:
                 # Try to infer from sentence mapping
@@ -2939,12 +3508,129 @@ class RAGService:
                 parsed = self._safe_parse_json(raw, query_type)
                 
                 answer = parsed.get("answer", "")
+                # CRITICAL FIX: If answer is still a JSON string, try to parse it
+                if isinstance(answer, str):
+                    # Check if it's a JSON string (starts with { or contains escaped JSON)
+                    if answer.strip().startswith('{'):
+                        try:
+                            answer_obj = json.loads(answer)
+                            if isinstance(answer_obj, dict) and "answer" in answer_obj:
+                                answer = answer_obj["answer"]
+                                print(f"[RAG] ✅ Extracted nested answer from JSON string")
+                        except:
+                            pass  # If parsing fails, keep original answer
+                    # Check if answer contains escaped JSON format like: "answer": "...", "answer_type": "..."
+                    elif '"answer"' in answer and '"answer_type"' in answer:
+                        # Try to extract just the answer field value
+                        try:
+                            # Find the answer field value (handle escaped quotes and newlines)
+                            # Use more robust pattern that handles multiline strings
+                            match = re.search(r'"answer"\s*:\s*"((?:[^"\\]|\\.|\\n)*)"', answer, re.DOTALL)
+                            if match:
+                                # Properly unescape JSON string
+                                import json as json_module
+                                try:
+                                    answer = json_module.loads('"' + match.group(1) + '"')
+                                except:
+                                    # Fallback: manual unescape
+                                    answer = match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                                print(f"[RAG] ✅ Extracted answer from JSON-like string")
+                        except Exception as e:
+                            print(f"[RAG] ⚠️ Failed to extract answer from JSON-like string: {e}")
+                            pass
+                    # Check if answer contains escaped newlines and JSON structure indicators
+                    elif '\\n' in answer and ('"answer_type"' in answer or '"chunks_used"' in answer or '"reasoning_steps"' in answer):
+                        # This might be a JSON string with escaped characters - extract text before JSON fields
+                        try:
+                            # Try to find and extract the actual answer text (before JSON fields)
+                            # Look for pattern: text content followed by JSON fields
+                            match = re.search(r'^(.+?)(?:\s*"answer_type"|\s*"chunks_used"|\s*"reasoning_steps"|\s*"sentence_mapping"|\s*"sources")', answer, re.DOTALL)
+                            if match:
+                                answer = match.group(1).strip()
+                                # Clean up escaped characters
+                                answer = answer.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                                # Remove trailing JSON structure if any
+                                answer = re.sub(r'\s*,\s*"answer_type".*$', '', answer, flags=re.DOTALL)
+                                print(f"[RAG] ✅ Extracted answer text from escaped JSON string")
+                        except Exception as e:
+                            print(f"[RAG] ⚠️ Failed to extract from escaped JSON: {e}")
+                            pass
+                
                 answer_type = parsed.get("answer_type", "FALLBACK")
-                chunk_indices = parsed.get("chunks_used", [])
+                
+                # Post-process: Fix numbered list formatting for ALL answer types that may contain lists
+                if answer_type in ["DOCUMENT_OVERVIEW", "SECTION_OVERVIEW", "EXPAND", "COMPARE_SYNTHESIZE"]:
+                    original_length = len(answer)
+                    answer = self._fix_numbered_list_formatting(answer)
+                    if len(answer) != original_length or "\n\n" in answer:
+                        print(f"[RAG] ✅ Fixed numbered list formatting: {original_length} -> {len(answer)} chars, has_double_newlines={answer.count(chr(10)*2)}")
+                    else:
+                        print(f"[RAG] ⚠️ Numbered list formatting fix may not have worked (length unchanged)")
+                
+                # Post-process: Clean table citations for COMPARE_SYNTHESIZE
+                if answer_type == "COMPARE_SYNTHESIZE" and "|" in answer:
+                    original_length = len(answer)
+                    answer = self._clean_table_citations(answer)
+                    if len(answer) != original_length:
+                        print(f"[RAG] ✅ Cleaned table citations: {original_length} -> {len(answer)} chars")
+                chunk_indices_raw = parsed.get("chunks_used", [])
+                # Normalize chunk_indices: convert to list of integers
+                chunk_indices = []
+                for item in chunk_indices_raw:
+                    if isinstance(item, int):
+                        chunk_indices.append(item)
+                    elif isinstance(item, dict):
+                        chunk_indices.append(item.get("chunk_index", item.get("chunk_idx")))
+                    elif isinstance(item, str) and item.isdigit():
+                        chunk_indices.append(int(item))
+                
                 confidence = parsed.get("confidence", 0.0)
                 sentence_mapping = parsed.get("sentence_mapping", [])
                 sources = parsed.get("sources", {})
                 reasoning_steps = parsed.get("reasoning_steps", [])
+                
+                # CRITICAL FIX: For COMPARE_SYNTHESIZE with table, auto-extract chunks
+                if answer_type == "COMPARE_SYNTHESIZE" and "|" in answer:
+                    has_table = "| Tiêu chí |" in answer or "|" in answer
+                    
+                    if has_table and len(chunk_indices) < 3:
+                        print(f"[RAG] ⚠️ COMPARE_SYNTHESIZE table found but only {len(chunk_indices)} chunks")
+                        
+                        # Try to extract from selected_results
+                        if hasattr(self, 'selected_results') and self.selected_results:
+                            # Extract chunk numbers mentioned in answer
+                            mentioned_chunks = set()
+                            # Pattern: "từ chunk X" or "(chunk X)"
+                            for match in re.finditer(r'chunk\s+(\d+)', answer, re.IGNORECASE):
+                                mentioned_chunks.add(int(match.group(1)))
+                            
+                            # Add chunks from selected_results that are highly relevant
+                            for item in self.selected_results[:20]:
+                                record = item.get("_record")
+                                if record:
+                                    chunk_idx = record.get("chunk_index")
+                                    doc_id = record.get("document_id")
+                                    
+                                    # Prefer chunks mentioned in answer or with high similarity
+                                    if chunk_idx in mentioned_chunks or item.get("similarity", 0) > 0.7:
+                                        if chunk_idx not in chunk_indices:
+                                            chunk_indices.append(chunk_idx)
+                            
+                            # If still empty, use top chunks from selected_results
+                            if not chunk_indices:
+                                print(f"[RAG] COMPARE_SYNTHESIZE with table but no chunks → recovering from selected_results")
+                                for item in self.selected_results[:15]:  # Lấy top 15 chunks
+                                    record = item.get("_record")
+                                    if record:
+                                        chunk_idx = record.get("chunk_index")
+                                        doc_id = record.get("document_id")
+                                        if chunk_idx not in chunk_indices:
+                                            chunk_indices.append(chunk_idx)
+                            
+                            if chunk_indices:
+                                answer_type = "COMPARE_SYNTHESIZE"  # Giữ nguyên type
+                                confidence = max(0.85, confidence)  # Boost confidence
+                                print(f"[RAG] ✅ Enhanced chunks_used to {len(chunk_indices)} chunks for COMPARE")
                 
                 # === VALIDATION LAYER ===
                 
@@ -3094,13 +3780,44 @@ class RAGService:
                                     confidence = 0.0
                                     print(f"[RAG] SECTION_OVERVIEW too short → fallback")
                         
-                        # Rule for DOCUMENT_OVERVIEW (similar)
+                        # 🔥 CRITICAL FIX: Validate DOCUMENT_OVERVIEW output
                         elif answer_type == "DOCUMENT_OVERVIEW":
-                            if len(chunk_indices) > 0 and len(answer) > 200:
-                                if confidence < 0.8:
-                                    confidence = 0.85
-                                print(f"[RAG] DOCUMENT_OVERVIEW validated")
-                            elif len(answer) < 100:
+                            # Count sections found in answer - match nhiều format hơn
+                            # Pattern 1: "1. **PHẦN 1:**" hoặc "1. **PHẦN 1**"
+                            # Pattern 2: "1. PHẦN 1:" hoặc "1. PHẦN 1"
+                            # Pattern 3: "PHẦN 1:" hoặc "PHẦN 1"
+                            section_patterns = [
+                                r'\d+\.\s+\*\*PHẦN\s+\d+',  # "1. **PHẦN 1"
+                                r'\d+\.\s+PHẦN\s+\d+',  # "1. PHẦN 1"
+                                r'PHẦN\s+\d+[:：]',  # "PHẦN 1:"
+                                r'PHẦN\s+\d+\s+[A-Z]',  # "PHẦN 1 TITLE"
+                            ]
+                            sections_found = 0
+                            for pattern in section_patterns:
+                                matches = re.findall(pattern, answer, re.IGNORECASE)
+                                sections_found = max(sections_found, len(matches))
+                            
+                            # Check for gaps - extract ALL section numbers
+                            section_numbers = re.findall(r'PHẦN\s+(\d+)', answer, re.IGNORECASE)
+                            section_nums = sorted([int(n) for n in section_numbers]) if section_numbers else []
+                            
+                            has_gaps = False
+                            if len(section_nums) >= 2:
+                                expected_range = range(section_nums[0], section_nums[-1] + 1)
+                                has_gaps = len(section_nums) != len(expected_range)
+                            
+                            if sections_found < 3:
+                                print(f"[RAG] ⚠️ DOCUMENT_OVERVIEW validation FAILED: only {sections_found} sections found (section_nums: {section_nums})")
+                                confidence = max(0.5, confidence * 0.7)
+                            elif has_gaps:
+                                print(f"[RAG] ⚠️ DOCUMENT_OVERVIEW has gaps: {section_nums} (expected: {list(expected_range)})")
+                                confidence = max(0.75, confidence * 0.9)
+                            else:
+                                print(f"[RAG] ✅ DOCUMENT_OVERVIEW validated: {sections_found} sections, no gaps (sections: {section_nums})")
+                                confidence = min(0.95, confidence)
+                            
+                            # Still require minimum length
+                            if len(answer) < 100:
                                 answer_type = "FALLBACK"
                                 chunk_indices = []
                                 confidence = 0.0

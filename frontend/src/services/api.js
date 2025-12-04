@@ -48,6 +48,21 @@ export async function fetchAdminStats() {
   return data;
 }
 
+// Admin User CRUD APIs
+export async function createAdminUser(userData) {
+  const { data } = await api.post("/admin/users", userData);
+  return data;
+}
+
+export async function updateAdminUser(userId, userData) {
+  const { data } = await api.put(`/admin/users/${userId}`, userData);
+  return data;
+}
+
+export async function deleteAdminUser(userId) {
+  await api.delete(`/admin/users/${userId}`);
+}
+
 // Auth APIs
 export async function register(email, password, fullName) {
   const { data } = await api.post("/auth/register", {

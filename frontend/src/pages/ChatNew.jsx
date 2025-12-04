@@ -9,6 +9,7 @@ import {
 import Button from "../components/Button";
 import CalendarButton from "../components/CalendarButton";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 // Context Menu Component
 function ContextMenu({ x, y, onRename, onDelete, onClose }) {
@@ -212,7 +213,64 @@ function Message({ message, isUser, previousMessage }) {
       }
       // Nếu có answer property
       if (value.answer !== undefined) {
-        const extracted = extractString(value.answer);
+        let extracted = extractString(value.answer);
+        // CRITICAL FIX: If extracted string contains JSON structure, extract just the text
+        if (typeof extracted === "string") {
+          // Check if it's a JSON string (starts with { or contains JSON fields)
+          if (
+            extracted.trim().startsWith("{") &&
+            extracted.includes('"answer"')
+          ) {
+            try {
+              const parsed = JSON.parse(extracted);
+              if (parsed && typeof parsed === "object" && parsed.answer) {
+                extracted = String(parsed.answer);
+                console.log("[Message] Extracted answer from JSON string");
+              }
+            } catch (e) {
+              // If JSON parse fails, try to extract answer field manually
+              const match = extracted.match(
+                /"answer"\s*:\s*"((?:[^"\\]|\\.|\\n)*)"/
+              );
+              if (match) {
+                try {
+                  extracted = JSON.parse('"' + match[1] + '"');
+                  console.log(
+                    "[Message] Extracted answer from escaped JSON string"
+                  );
+                } catch (e2) {
+                  // Fallback: manual unescape
+                  extracted = match[1]
+                    .replace(/\\n/g, "\n")
+                    .replace(/\\"/g, '"')
+                    .replace(/\\\\/g, "\\");
+                }
+              }
+            }
+          }
+          // Check if it contains escaped JSON format like: "answer": "...", "answer_type": "..."
+          else if (
+            extracted.includes('"answer"') &&
+            extracted.includes('"answer_type"')
+          ) {
+            // Try to extract just the answer field value
+            const match = extracted.match(
+              /"answer"\s*:\s*"((?:[^"\\]|\\.|\\n)*)"/
+            );
+            if (match) {
+              try {
+                extracted = JSON.parse('"' + match[1] + '"');
+                console.log("[Message] Extracted answer from JSON-like string");
+              } catch (e) {
+                // Fallback: manual unescape
+                extracted = match[1]
+                  .replace(/\\n/g, "\n")
+                  .replace(/\\"/g, '"')
+                  .replace(/\\\\/g, "\\");
+              }
+            }
+          }
+        }
         // Double check: nếu extracted vẫn là object, return empty
         if (typeof extracted === "object" && extracted.$$typeof) {
           console.warn("[Message] Extracted answer is still a React element");
@@ -249,30 +307,168 @@ function Message({ message, isUser, previousMessage }) {
   }
 
   // Remove CHUNKS_USED pattern from message text (case insensitive)
-  if (messageText && typeof messageText === "string") {
-    // Remove patterns like [CHUNKS_USED: 1, 2, 3] or CHUNKS_USED: 1, 2, 3
-    messageText = messageText
-      .replace(/\[?CHUNKS_USED:\s*[\d,\s]+\]?/gi, "")
-      .trim();
+  // CRITICAL: Detect table format FIRST, then numbered lists
+  let hasTable = false;
+  let hasNumberedList = false;
 
-    // Remove chunk references like "(chunk 76)", "chunk 76", "(chunk 265, 273)", etc.
-    // Pattern: (chunk X) or chunk X or (chunk X, Y, Z) - case insensitive
-    messageText = messageText
-      // Remove chunk references with parentheses: (chunk 76), (chunk 265, 273)
-      .replace(/\(\s*chunk\s+\d+(?:\s*,\s*\d+)*\s*\)/gi, "")
-      // Remove chunk references without parentheses: chunk 76, chunk 265, 273
-      .replace(/\s+chunk\s+\d+(?:\s*,\s*\d+)*/gi, "")
-      // Clean up extra spaces, commas, and parentheses left behind
-      .replace(/\s*,\s*,/g, ",") // Double commas
-      .replace(/\s*,\s*\./g, ".") // Comma before period
-      .replace(/\s*,\s*\)/g, ")") // Comma before closing paren
-      .replace(/\(\s*,/g, "(") // Opening paren with comma
-      .replace(/\(\s*\)/g, "") // Empty parentheses
-      .replace(/\s*\(\s*/g, " (") // Space before opening paren
-      .replace(/\s{2,}/g, " ") // Multiple spaces
-      .replace(/^\s*,\s*/, "") // Leading comma
-      .replace(/\s*,\s*$/, "") // Trailing comma
-      .trim();
+  if (messageText && typeof messageText === "string") {
+    // CRITICAL: Detect if answer contains a table FIRST
+    hasTable =
+      messageText.includes("|") && /\|.*\|.*\n\|[-:]+\|/.test(messageText);
+
+    // Only detect numbered list if NOT a table
+    // FIXED: Detect both "1. **" and "1.  **" (with single or double space)
+    hasNumberedList =
+      !hasTable &&
+      /\d+\.\s+\*\*/.test(messageText) &&
+      (messageText.match(/\d+\.\s+\*\*/g) || []).length >= 2;
+
+    // Pre-process: Fix formatting ONLY if not a table
+    if (hasNumberedList) {
+      // CRITICAL: Ensure TRIPLE newlines for ReactMarkdown to recognize blank lines
+      // ReactMarkdown needs \n\n\n (or more) to create separate <p> tags
+      messageText = messageText.replace(/([^\n])\s+(\d+\.\s+)/g, "$1\n\n\n$2");
+      messageText = messageText.replace(
+        /(\d+\.\s+[^\n]+?)\s+(\d+\.\s+)/g,
+        "$1\n\n\n$2"
+      );
+      messageText = messageText.replace(
+        /(\d+\.\s+[^\n]+)\n(?!\n)(\d+\.\s+)/g,
+        "$1\n\n\n$2"
+      );
+
+      // Clean up: Remove excessive newlines (keep max 3)
+      messageText = messageText.replace(/\n{4,}/g, "\n\n\n");
+      // Remove leading newlines
+      messageText = messageText.replace(/^\n+/, "");
+
+      console.log(`[Message] Fixed numbered list with triple newlines`);
+
+      // DEBUG: Log first 500 chars to check newlines
+      console.log(
+        `[Message] First 500 chars after fix:`,
+        messageText.substring(0, 500)
+      );
+      console.log(
+        `[Message] Newline count:`,
+        (messageText.match(/\n/g) || []).length
+      );
+      console.log(
+        `[Message] Triple newline count:`,
+        (messageText.match(/\n\n\n/g) || []).length
+      );
+      console.log(
+        `[Message] Double newline count:`,
+        (messageText.match(/\n\n/g) || []).length
+      );
+    } else if (hasTable) {
+      // For tables, preserve exact formatting from backend
+      console.log("[Message] Table detected, preserving format");
+    }
+
+    if (!hasTable) {
+      // Only apply cleanup if there's no table (to preserve table format)
+      // Remove patterns like [CHUNKS_USED: 1, 2, 3] or CHUNKS_USED: 1, 2, 3
+      messageText = messageText
+        .replace(/\[?CHUNKS_USED:\s*[\d,\s]+\]?/gi, "")
+        .trim();
+
+      // Remove chunk references like "(chunk 76)", "chunk 76", "(chunk 265, 273)", etc.
+      // Pattern: (chunk X) or chunk X or (chunk X, Y, Z) - case insensitive
+      messageText = messageText
+        // Remove chunk references with parentheses: (chunk 76), (chunk 265, 273)
+        .replace(/\(\s*chunk\s+\d+(?:\s*,\s*\d+)*\s*\)/gi, "")
+        // Remove chunk references without parentheses: chunk 76, chunk 265, 273
+        .replace(/\s+chunk\s+\d+(?:\s*,\s*\d+)*/gi, "")
+        // Clean up extra spaces, commas, and parentheses left behind
+        .replace(/\s*,\s*,/g, ",") // Double commas
+        .replace(/\s*,\s*\./g, ".") // Comma before period
+        .replace(/\s*,\s*\)/g, ")") // Comma before closing paren
+        .replace(/\(\s*,/g, "(") // Opening paren with comma
+        .replace(/\(\s*\)/g, "") // Empty parentheses
+        .replace(/\s*\(\s*/g, " (") // Space before opening paren
+        .replace(/\s{2,}/g, " ") // Multiple spaces
+        .replace(/^\s*,\s*/, "") // Leading comma
+        .replace(/\s*,\s*$/, "") // Trailing comma
+        .trim();
+    } else {
+      // If table exists, remove CHUNKS_USED pattern AND citations from table cells
+      // Split by lines to process table rows separately
+      const lines = messageText.split("\n");
+      const cleanedLines = lines
+        .map((line) => {
+          // Check if this is a table row (contains | but not separator row)
+          if (line.includes("|") && !/^\|[-:|\s]+\|/.test(line.trim())) {
+            // This is a table data row
+            // Remove CHUNKS_USED pattern
+            let cleaned = line.replace(/\[?CHUNKS_USED:\s*[\d,\s]+\]?/gi, "");
+            // Remove citations in table cells: "(từ [filename], chunk X)" or "(từ chunk X)"
+            // Pattern 1: "(từ filename.pdf, chunk X)" or "(từ filename.pdf, chunk X, Y, Z)"
+            cleaned = cleaned.replace(
+              /\(từ\s+[^,)]+,\s*chunk\s+\d+(?:\s*,\s*\d+)*\s*\)/gi,
+              ""
+            );
+            // Pattern 2: "(từ chunk X)" or "(từ chunk X, Y, Z)" (fallback for old format)
+            cleaned = cleaned.replace(
+              /\(từ\s+chunk\s+\d+(?:\s*,\s*\d+)*\s*\)/gi,
+              ""
+            );
+            // Remove standalone chunk references at end of cell: "chunk X" or "chunk X, Y, Z"
+            // Match chunk reference before | or at end of line
+            cleaned = cleaned.replace(
+              /\s+chunk\s+\d+(?:\s*,\s*\d+)*\s*(?=\||$)/gi,
+              ""
+            );
+            // Clean up extra spaces but preserve table structure
+            cleaned = cleaned.replace(/\s{2,}/g, " ");
+            return cleaned;
+          } else if (hasTable && line.trim() && !line.trim().startsWith("|")) {
+            // This is text after table (like conclusion) - also remove citations
+            let cleaned = line;
+            // Pattern 1: "(từ [filename], chunk X)" or "(từ [filename], chunk X, Y, Z)"
+            cleaned = cleaned.replace(
+              /\(từ\s+[^,)]+,\s*chunk\s+\d+(?:\s*,\s*\d+)*\s*\)/gi,
+              ""
+            );
+            // Pattern 2: "(từ chunk X)" or "(từ chunk X, Y, Z)" (fallback)
+            cleaned = cleaned.replace(
+              /\(từ\s+chunk\s+\d+(?:\s*,\s*\d+)*\s*\)/gi,
+              ""
+            );
+            // Remove standalone chunk references at end of sentences
+            cleaned = cleaned.replace(
+              /\s+chunk\s+\d+(?:\s*,\s*\d+)*\s*(?=[\.\n]|$)/gi,
+              ""
+            );
+            // Clean up extra spaces
+            cleaned = cleaned.replace(/\s{2,}/g, " ");
+            return cleaned;
+          } else if (
+            /^\s*\*\*?Nguồn tham khảo:?\*\*?\s*/i.test(line) ||
+            /^\s*Nguồn tham khảo:?\s*/i.test(line)
+          ) {
+            // This is "Nguồn tham khảo:" line - remove it
+            return null;
+          }
+          return line;
+        })
+        .filter((line) => line !== null);
+
+      messageText = cleanedLines
+        .join("\n")
+        // Remove "Nguồn tham khảo:" lines that might remain
+        .replace(
+          /\n\s*\*\*?Nguồn tham khảo:?\*\*?\s*[^\n]*(?:chunk\s+\d+(?:\s*,\s*\d+)*)*\s*/gi,
+          ""
+        )
+        .replace(
+          /\n\s*Nguồn tham khảo:?\s*[^\n]*(?:chunk\s+\d+(?:\s*,\s*\d+)*)*\s*/gi,
+          ""
+        )
+        // Clean up extra empty lines
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    }
   }
 
   const calendarMetadata = !isUser ? message?.calendarMetadata || {} : {};
@@ -306,117 +502,267 @@ function Message({ message, isUser, previousMessage }) {
         }`}
       >
         {isUser ? (
-          <div className="whitespace-pre-wrap leading-relaxed">
+          <div className="whitespace-pre-wrap leading-relaxed text-left">
             {messageText}
           </div>
         ) : (
           <>
             <div className="prose prose-sm max-w-none leading-relaxed">
               {messageText && typeof messageText === "string" ? (
-                <ReactMarkdown
-                  components={{
-                    // Custom styling for markdown elements - Technical document format
-                    h1: ({ node, ...props }) => (
-                      <h1
-                        className="text-2xl font-bold mb-4 mt-6 text-gray-900 border-b-2 border-gray-300 pb-2"
-                        {...props}
-                      />
-                    ),
-                    h2: ({ node, ...props }) => (
-                      <h2
-                        className="text-xl font-bold mb-3 mt-5 text-gray-800 border-b border-gray-200 pb-1.5"
-                        {...props}
-                      />
-                    ),
-                    h3: ({ node, ...props }) => (
-                      <h3
-                        className="text-lg font-semibold mb-2 mt-4 text-gray-700"
-                        {...props}
-                      />
-                    ),
-                    p: ({ node, ...props }) => (
-                      <p className="mb-3 leading-7 text-gray-700" {...props} />
-                    ),
-                    ul: ({ node, ...props }) => (
-                      <ul
-                        className="list-disc list-outside mb-4 space-y-2 ml-6"
-                        {...props}
-                      />
-                    ),
-                    ol: ({ node, ...props }) => (
-                      <ol
-                        className="list-decimal list-outside mb-4 space-y-2 ml-6"
-                        {...props}
-                      />
-                    ),
-                    li: ({ node, ...props }) => (
-                      <li className="ml-2 leading-6 text-gray-700" {...props} />
-                    ),
-                    strong: ({ node, ...props }) => (
-                      <strong className="font-bold text-gray-900" {...props} />
-                    ),
-                    em: ({ node, ...props }) => (
-                      <em className="italic text-gray-700" {...props} />
-                    ),
-                    hr: ({ node, ...props }) => (
-                      <hr className="my-4 border-gray-300" {...props} />
-                    ),
-                    code: ({ node, inline, ...props }) =>
-                      inline ? (
-                        <code
-                          className="bg-gray-200 px-1 py-0.5 rounded text-sm font-mono"
-                          {...props}
-                        />
-                      ) : (
-                        <code
-                          className="block bg-gray-200 p-2 rounded text-sm font-mono overflow-x-auto mb-2"
+                hasNumberedList ? (
+                  // Manual render for numbered lists to ensure spacing
+                  <div>
+                    {(() => {
+                      // CRITICAL: Split BEFORE ReactMarkdown processes it
+                      // Use regex to split by numbered items pattern
+                      // FIXED: Match both "1. **" and "1.  **" (single or double space)
+                      // CRITICAL: Use negative lookbehind to avoid splitting "10. **" into "1" and "0. **"
+                      // Pattern: (?<!\d) ensures we don't match if there's a digit before (e.g., "10" -> don't match "1")
+                      const introMatch = messageText.match(
+                        /^(.*?)(?<!\d)(?=\d+\.\s+\*\*)/s
+                      );
+                      const intro = introMatch ? introMatch[1].trim() : "";
+
+                      // Split by numbered items: "1. **", "2. **", "10. **", etc.
+                      // FIXED: Use negative lookbehind (?<!\d) to ensure we match complete numbers
+                      // This prevents "10. **" from being split into "1" and "0. **"
+                      const itemsText = messageText.substring(intro.length);
+                      const items = itemsText
+                        .split(/(?<!\d)(?=\d+\.\s+\*\*)/)
+                        .map((s) => s.trim()) // Trim each item immediately
+                        .filter((s) => s.length > 0); // CRITICAL: Filter empty strings
+
+                      console.log(
+                        `[Message] Intro length: ${intro.length}, Items: ${items.length}`
+                      );
+
+                      // Build sections array, filtering empty intro
+                      const sections = [];
+                      if (intro && intro.trim().length > 0) {
+                        sections.push(intro.trim());
+                      }
+                      sections.push(...items);
+
+                      // CRITICAL: Filter empty sections BEFORE mapping
+                      const validSections = sections.filter(
+                        (s) => s && s.trim().length > 0
+                      );
+
+                      console.log(
+                        `[Message] Total sections: ${sections.length}, Valid sections: ${validSections.length}`
+                      );
+
+                      return validSections.map((section, idx) => {
+                        const trimmed = section.trim();
+                        // Double-check: should never be empty at this point
+                        if (!trimmed || trimmed.length === 0) {
+                          console.warn(
+                            `[Message] Empty section at index ${idx}`
+                          );
+                          return null;
+                        }
+
+                        // FIXED: Match both "1. **" and "1.  **" (single or double space)
+                        // Use negative lookbehind to ensure we match complete numbers
+                        const isNumbered = /^(?<!\d)\d+\.\s+\*\*/.test(trimmed);
+
+                        console.log(
+                          `[Message] Section ${idx}: numbered=${isNumbered}, length=${
+                            trimmed.length
+                          }, text="${trimmed.substring(0, 50)}"`
+                        );
+
+                        // For numbered items, render manually to preserve the number
+                        if (isNumbered) {
+                          // Extract number and rest of text
+                          const match = trimmed.match(/^(\d+\.\s+)(\*\*.*)/);
+                          if (match) {
+                            const [, number, rest] = match;
+                            return (
+                              <div
+                                key={idx}
+                                className="mb-6 border-l-4 border-purple-200 pl-4 py-2"
+                              >
+                                <p className="leading-7 text-gray-700 m-0">
+                                  <span className="font-semibold text-gray-900">
+                                    {number}
+                                  </span>
+                                  <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    components={{
+                                      p: ({ node, ...props }) => (
+                                        <span {...props} />
+                                      ),
+                                      strong: ({ node, ...props }) => (
+                                        <strong
+                                          className="font-bold text-gray-900"
+                                          {...props}
+                                        />
+                                      ),
+                                    }}
+                                  >
+                                    {rest}
+                                  </ReactMarkdown>
+                                </p>
+                              </div>
+                            );
+                          }
+                        }
+
+                        // For non-numbered items (intro), use ReactMarkdown normally
+                        return (
+                          <div key={idx} className="mb-3">
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                p: ({ node, ...props }) => (
+                                  <p
+                                    className="leading-7 text-gray-700 m-0"
+                                    {...props}
+                                  />
+                                ),
+                                strong: ({ node, ...props }) => (
+                                  <strong
+                                    className="font-bold text-gray-900"
+                                    {...props}
+                                  />
+                                ),
+                              }}
+                            >
+                              {trimmed}
+                            </ReactMarkdown>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                ) : (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[]}
+                    components={{
+                      // Custom styling for markdown elements - Technical document format
+                      h1: ({ node, ...props }) => (
+                        <h1
+                          className="text-2xl font-bold mb-4 mt-6 text-gray-900 border-b-2 border-gray-300 pb-2"
                           {...props}
                         />
                       ),
-                    pre: ({ node, ...props }) => (
-                      <pre
-                        className="bg-gray-200 p-2 rounded text-sm font-mono overflow-x-auto mb-2"
-                        {...props}
-                      />
-                    ),
-                    table: ({ node, ...props }) => (
-                      <div className="overflow-x-auto mb-2">
-                        <table
-                          className="min-w-full border-collapse border border-gray-300"
+                      h2: ({ node, ...props }) => (
+                        <h2
+                          className="text-xl font-bold mb-3 mt-5 text-gray-800 border-b border-gray-200 pb-1.5"
                           {...props}
                         />
-                      </div>
-                    ),
-                    th: ({ node, ...props }) => (
-                      <th
-                        className="border border-gray-300 px-2 py-1 bg-gray-200 font-bold"
-                        {...props}
-                      />
-                    ),
-                    td: ({ node, ...props }) => (
-                      <td
-                        className="border border-gray-300 px-2 py-1"
-                        {...props}
-                      />
-                    ),
-                    blockquote: ({ node, ...props }) => (
-                      <blockquote
-                        className="border-l-4 border-gray-400 pl-4 italic my-2"
-                        {...props}
-                      />
-                    ),
-                    a: ({ node, ...props }) => (
-                      <a
-                        className="text-blue-600 underline"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        {...props}
-                      />
-                    ),
-                  }}
-                >
-                  {String(messageText)}
-                </ReactMarkdown>
+                      ),
+                      h3: ({ node, ...props }) => (
+                        <h3
+                          className="text-lg font-semibold mb-2 mt-4 text-gray-700"
+                          {...props}
+                        />
+                      ),
+                      p: ({ node, ...props }) => (
+                        <p
+                          className="mb-3 leading-7 text-gray-700"
+                          {...props}
+                        />
+                      ),
+                      ul: ({ node, ...props }) => (
+                        <ul
+                          className="list-disc list-outside mb-4 space-y-2 ml-6"
+                          {...props}
+                        />
+                      ),
+                      ol: ({ node, ...props }) => (
+                        <ol
+                          className="list-decimal list-outside mb-4 space-y-2 ml-6"
+                          {...props}
+                        />
+                      ),
+                      li: ({ node, ...props }) => (
+                        <li
+                          className="ml-2 leading-6 text-gray-700"
+                          {...props}
+                        />
+                      ),
+                      strong: ({ node, ...props }) => (
+                        <strong
+                          className="font-bold text-gray-900"
+                          {...props}
+                        />
+                      ),
+                      em: ({ node, ...props }) => (
+                        <em className="italic text-gray-700" {...props} />
+                      ),
+                      hr: ({ node, ...props }) => (
+                        <hr className="my-4 border-gray-300" {...props} />
+                      ),
+                      code: ({ node, inline, ...props }) =>
+                        inline ? (
+                          <code
+                            className="bg-gray-200 px-1 py-0.5 rounded text-sm font-mono"
+                            {...props}
+                          />
+                        ) : (
+                          <code
+                            className="block bg-gray-200 p-2 rounded text-sm font-mono overflow-x-auto mb-2"
+                            {...props}
+                          />
+                        ),
+                      pre: ({ node, ...props }) => (
+                        <pre
+                          className="bg-gray-200 p-2 rounded text-sm font-mono overflow-x-auto mb-2"
+                          {...props}
+                        />
+                      ),
+                      table: ({ node, ...props }) => (
+                        <div className="overflow-x-auto my-4 rounded-lg border border-gray-300 shadow-sm">
+                          <table
+                            className="min-w-full border-collapse bg-white"
+                            {...props}
+                          />
+                        </div>
+                      ),
+                      thead: ({ node, ...props }) => (
+                        <thead className="bg-gray-100" {...props} />
+                      ),
+                      tbody: ({ node, ...props }) => <tbody {...props} />,
+                      tr: ({ node, ...props }) => (
+                        <tr
+                          className="border-b border-gray-200 hover:bg-gray-50 transition-colors"
+                          {...props}
+                        />
+                      ),
+                      th: ({ node, ...props }) => (
+                        <th
+                          className="border-r border-gray-300 px-4 py-3 bg-gray-100 font-bold text-left text-gray-800"
+                          {...props}
+                        />
+                      ),
+                      td: ({ node, ...props }) => (
+                        <td
+                          className="border-r border-gray-300 px-4 py-3 text-gray-700"
+                          {...props}
+                        />
+                      ),
+                      blockquote: ({ node, ...props }) => (
+                        <blockquote
+                          className="border-l-4 border-gray-400 pl-4 italic my-2"
+                          {...props}
+                        />
+                      ),
+                      a: ({ node, ...props }) => (
+                        <a
+                          className="text-blue-600 underline"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          {...props}
+                        />
+                      ),
+                    }}
+                  >
+                    {String(messageText)}
+                  </ReactMarkdown>
+                )
               ) : (
                 <div className="text-gray-500 italic">No content available</div>
               )}

@@ -6,8 +6,8 @@ from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 
 from ..core.database import get_database
-from ..core.security import decode_token
-from ..models.user import get_user_by_id, UserPublic
+from ..core.security import decode_token, hash_password
+from ..models.user import get_user_by_id, get_user_by_email, create_user, UserPublic
 from ..services.admin import fetch_user_overview, fetch_document_overview, fetch_system_stats
 
 
@@ -78,4 +78,170 @@ async def get_admin_stats(current_admin: UserPublic = Depends(get_current_admin)
     db = get_database()
     stats = await fetch_system_stats(db)
     return AdminStats(**stats)
+
+
+class UserCreateRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str | None = None
+    is_admin: bool = False
+
+
+class UserUpdateRequest(BaseModel):
+    email: str | None = None
+    password: str | None = None
+    full_name: str | None = None
+    is_admin: bool | None = None
+
+
+@router.post("/users", response_model=UserPublic)
+async def create_user_admin(
+    payload: UserCreateRequest,
+    current_admin: UserPublic = Depends(get_current_admin)
+):
+    """Create a new user (admin only)"""
+    db = get_database()
+    
+    # Check if email already exists
+    existing = await get_user_by_email(db, payload.email)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create user
+    user = await create_user(
+        db,
+        payload.email,
+        hash_password(payload.password),
+        payload.full_name,
+        is_admin=payload.is_admin,
+    )
+    
+    return UserPublic(
+        id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        is_admin=user.is_admin
+    )
+
+
+@router.put("/users/{user_id}", response_model=UserPublic)
+async def update_user_admin(
+    user_id: str,
+    payload: UserUpdateRequest,
+    current_admin: UserPublic = Depends(get_current_admin)
+):
+    """Update a user (admin only)"""
+    db = get_database()
+    
+    # Get user to update
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Prevent admin from removing their own admin status
+    if user.id == current_admin.id and payload.is_admin is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot remove your own admin privileges"
+        )
+    
+    # Check if email is being changed and already exists
+    if payload.email and payload.email != user.email:
+        existing = await get_user_by_email(db, payload.email)
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+    
+    # Build update dict
+    update_data = {}
+    if payload.email is not None:
+        update_data["email"] = payload.email
+    if payload.password is not None:
+        update_data["hashed_password"] = hash_password(payload.password)
+    if payload.full_name is not None:
+        update_data["full_name"] = payload.full_name
+    if payload.is_admin is not None:
+        update_data["is_admin"] = payload.is_admin
+    
+    # Update user
+    from bson import ObjectId
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID"
+        )
+    
+    await db["users"].update_one(
+        {"_id": oid},
+        {"$set": update_data}
+    )
+    
+    # Fetch updated user
+    updated_user = await get_user_by_id(db, user_id)
+    if not updated_user:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch updated user"
+        )
+    
+    return UserPublic(
+        id=updated_user.id,
+        email=updated_user.email,
+        full_name=updated_user.full_name,
+        is_admin=updated_user.is_admin
+    )
+
+
+@router.delete("/users/{user_id}")
+async def delete_user_admin(
+    user_id: str,
+    current_admin: UserPublic = Depends(get_current_admin)
+):
+    """Delete a user (admin only)"""
+    db = get_database()
+    
+    # Get user to delete
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Prevent admin from deleting themselves
+    if user.id == current_admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete your own account"
+        )
+    
+    # Delete user
+    from bson import ObjectId
+    try:
+        oid = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID"
+        )
+    
+    result = await db["users"].delete_one({"_id": oid})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete user"
+        )
+    
+    return {"message": "User deleted successfully"}
 
