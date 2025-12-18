@@ -8,11 +8,19 @@ export const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+// Add request interceptor for debugging
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("token");
   if (token && !config.headers.Authorization) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+
+  // Debug log
+  console.log(
+    `[API Request] ${config.method.toUpperCase()} ${config.url}`,
+    config.data
+  );
+
   return config;
 });
 
