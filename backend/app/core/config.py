@@ -8,6 +8,9 @@ class Settings(BaseModel):
 
     mongodb_uri: str = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     mongodb_db: str = os.getenv("MONGODB_DB", "studyqna")
+    mongodb_server_selection_timeout_ms: int = int(
+        os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000")
+    )
 
     faiss_index_dir: str = os.getenv("FAISS_INDEX_DIR", "./data/faiss")
     upload_dir: str = os.getenv("UPLOAD_DIR", "./data/uploads")
@@ -39,7 +42,7 @@ class Settings(BaseModel):
 
     # API keys
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
-    gemini_api_key: str | None = os.getenv("GEMINI_API_KEY", "AIzaSyCp9rDco53tJdc7w9zHulbXw1ST666ZuEY")
+    gemini_api_key: str | None = os.getenv("GEMINI_API_KEY", "AIzaSyDQ0lDuBeMsBdB_Jr7tOsJoVJWPZ9J_nq0")
 
     # Google Calendar integration
     google_client_id: str | None = os.getenv("GOOGLE_CLIENT_ID")
@@ -57,6 +60,32 @@ class Settings(BaseModel):
     jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", "dev-secret-change-me")
     jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
     access_token_expire_minutes: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+    # CORS
+    cors_allow_origins: list[str] = Field(
+        default_factory=lambda: [
+            origin.strip()
+            for origin in os.getenv(
+                "CORS_ALLOW_ORIGINS",
+                ",".join(
+                    [
+                        # Production (Vercel)
+                        "https://studyqna.vercel.app",
+                        # Local dev
+                        "http://localhost:5173",
+                        "http://localhost:3000",
+                        "http://127.0.0.1:5173",
+                        "http://127.0.0.1:3000",
+                    ]
+                ),
+            ).split(",")
+            if origin.strip()
+        ]
+    )
+    # Allows Vercel preview deployments like https://studyqna-git-xyz.vercel.app
+    cors_allow_origin_regex: str | None = os.getenv(
+        "CORS_ALLOW_ORIGIN_REGEX", r"^https://.*\.vercel\.app$"
+    )
 
 
 settings = Settings()

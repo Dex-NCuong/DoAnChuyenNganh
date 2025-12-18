@@ -23,27 +23,45 @@ class LoginJSON(BaseModel):
     password: str
 
 
+def _db_unavailable_http_exc(exc: Exception) -> HTTPException:
+    # Bug-catcher: Motor/PyMongo errors should not become 500s for end-users.
+    # Most common cause in production: missing/incorrect MONGODB_URI.
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Database is unavailable. Please try again later.",
+    )
+
+
 @router.post("/register", response_model=UserPublic)
 async def register(payload: UserInCreate):
     db = get_database()
-    existing = await get_user_by_email(db, payload.email)
+    try:
+        existing = await get_user_by_email(db, payload.email)
+    except Exception as exc:
+        raise _db_unavailable_http_exc(exc) from exc
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     is_admin = payload.email.lower() in settings.admin_emails
-    user = await create_user(
-        db,
-        payload.email,
-        hash_password(payload.password),
-        payload.full_name,
-        is_admin=is_admin,
-    )
+    try:
+        user = await create_user(
+            db,
+            payload.email,
+            hash_password(payload.password),
+            payload.full_name,
+            is_admin=is_admin,
+        )
+    except Exception as exc:
+        raise _db_unavailable_http_exc(exc) from exc
     return UserPublic(id=user.id, email=user.email, full_name=user.full_name, is_admin=user.is_admin)
 
 
 @router.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     db = get_database()
-    user = await get_user_by_email(db, form_data.username)
+    try:
+        user = await get_user_by_email(db, form_data.username)
+    except Exception as exc:
+        raise _db_unavailable_http_exc(exc) from exc
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
     token = create_access_token(user.id)
@@ -53,7 +71,10 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 @router.post("/login-json", response_model=Token)
 async def login_json(payload: LoginJSON):
     db = get_database()
-    user = await get_user_by_email(db, payload.email)
+    try:
+        user = await get_user_by_email(db, payload.email)
+    except Exception as exc:
+        raise _db_unavailable_http_exc(exc) from exc
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
     token = create_access_token(user.id)
@@ -65,7 +86,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserPublic:
     if not payload or "sub" not in payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     db = get_database()
-    user = await get_user_by_id(db, payload["sub"])  # fetch real user
+    try:
+        user = await get_user_by_id(db, payload["sub"])  # fetch real user
+    except Exception as exc:
+        raise _db_unavailable_http_exc(exc) from exc
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return UserPublic(id=user.id, email=user.email, full_name=user.full_name, is_admin=user.is_admin)

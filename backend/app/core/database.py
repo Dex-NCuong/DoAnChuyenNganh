@@ -19,6 +19,7 @@ def get_mongo_client() -> AsyncIOMotorClient:
             settings.mongodb_uri,
             tz_aware=True,
             tzinfo=timezone.utc,
+            serverSelectionTimeoutMS=settings.mongodb_server_selection_timeout_ms,
         )
     return _mongo_client
 

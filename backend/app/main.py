@@ -95,6 +95,7 @@ if sys.platform == 'win32':
 from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from .core.config import settings
 
 # Safe print function to handle Unicode encoding errors on Windows
 def safe_print(*args, **kwargs):
@@ -174,13 +175,8 @@ def create_app() -> FastAPI:
     # CORS configuration - must be before other middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://localhost:3000",
-            "http://127.0.0.1:5173",
-            "http://127.0.0.1:3000",
-            "*",
-        ],  # Explicit origins for better security
+        allow_origins=settings.cors_allow_origins,  # avoid "*" when allow_credentials=True
+        allow_origin_regex=settings.cors_allow_origin_regex,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
@@ -207,28 +203,14 @@ def create_app() -> FastAPI:
         safe_print(f"[Global Exception Handler] {type(exc).__name__}: {str(exc)}")
         import traceback
         safe_print(f"[Global Exception Handler] Traceback: {traceback.format_exc()}")
-        
-        origin = request.headers.get("origin")
-        cors_headers = {}
-        if origin and origin in [
-            "http://localhost:5173",
-            "http://localhost:3000",
-            "http://127.0.0.1:5173",
-            "http://127.0.0.1:3000",
-        ]:
-            cors_headers = {
-                "Access-Control-Allow-Origin": origin,
-                "Access-Control-Allow-Credentials": "true",
-                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                "Access-Control-Allow-Headers": "*",
-            }
-        
+
+        # IMPORTANT: Do not manually manage CORS headers here.
+        # CORSMiddleware will attach the correct headers (including on 500 responses).
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "detail": f"Lỗi server: {str(exc)}"
             },
-            headers=cors_headers
         )
 
     # Routers (Module 3+)
